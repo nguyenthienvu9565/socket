@@ -1,0 +1,11 @@
+Bạn có thể nào thực hiện nâng cấp các file này theo như file md được không? Các file .h với .cpp đều là các file raw chưa có được nâng cấp. Khi nâng cấp lên, bạn bổ sung thêm giúp mình các ghi chú nha. Nếu có ghi chú thì cứ ghi bình thường, không có cần phải thêm các icon gì hết.
+Nhắc lại về các tiêu chí ở mức độ excellent của thầy mình:
+"Hoàn thiện Giao diện: Xây dựng CLI hoặc GUI hiển thị rõ trạng thái mạng, tiến độ truyển file. DOCX
+Xử lý đa dạng dữ liệu: Cài đặt luồng đọc/ghi an toàn cho các file nhị phân lớn (ảnh, video,
+nén). DOCx
+Tích hợp chế độ mạng: Xử lý địa chỉ IP và Port nhận được để mở kết nối UDP đúng với chế độ Active/Passive."
+Các đường dẫn đều đã đúng do mình đang gộp một thư mục lại cho tiện, bạn tạo các file code cho mình nha. Với bạn mình có góp ý mình như này nè, có gì bạn coi bạn bổ sung nha
+Hoàn thiện Giao diện: Xây dựng CLI hoặc GUI hiển thị rõ trạng thái mạng, tiến độ truyển file.
+Xử lý đa dạng dữ liệu: Cài đặt luồng đọc/ghi an toàn cho các file nhị phân lớn (ảnh, video,
+nén).
+Tích hợp chế độ mạng: Xử lý địa chỉ IP và Port nhận được để mở kết nối UDP đúng với chế độ Active/Passive.
