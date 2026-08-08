@@ -1,14 +1,22 @@
 #include "handlers/auth_handler.h"
 #include "reply_codes.h"
+#include <unordered_map>
 
 namespace ftp {
+
+// In-memory user credential table
+static const std::unordered_map<std::string, std::string> USER_CREDENTIALS = {
+    {"admin", "secret123"},
+    {"guest", "guestpass"},
+    {"anonymous", ""} // Hỗ trợ đăng nhập ẩn danh không cần pass
+};
 
 std::string handleUSER(const std::string& args, Session& session) {
     if (args.empty()) {
         return formatReply(SYNTAX_ERROR_PARAMS, "Username required");
     }
     session.username = args;
-    session.authenticated = false; // must PASS before authenticated
+    session.authenticated = false;
     return formatReply(USERNAME_OK_NEED_PASS, "User name okay, need password");
 }
 
@@ -17,12 +25,13 @@ std::string handlePASS(const std::string& args, Session& session) {
         return formatReply(SYNTAX_ERROR, "Send USER first");
     }
 
-    // TODO(you): replace this with a real credential check — a
-    // user/password table (file, in-memory map, whatever your group
-    // agreed on for "Basic Level: Authentication Mechanism").
-    // Placeholder for now: accepts any non-empty password so you can
-    // test the rest of the pipeline before auth logic is final.
-    bool ok = !args.empty();
+    bool ok = false;
+    auto it = USER_CREDENTIALS.find(session.username);
+    if (it != USER_CREDENTIALS.end() && it->second == args) {
+        ok = true;
+    } else if (session.username == "anonymous") {
+        ok = true;
+    }
 
     if (!ok) {
         session.username.clear();
@@ -35,9 +44,6 @@ std::string handlePASS(const std::string& args, Session& session) {
 std::string handleQUIT(Session& session) {
     session.authenticated = false;
     return formatReply(GOODBYE, "Goodbye");
-    // NOTE: this only updates session state / builds the reply text.
-    // Closing the actual socket happens in main.cpp's client loop
-    // after this reply is sent.
 }
 
 } // namespace ftp

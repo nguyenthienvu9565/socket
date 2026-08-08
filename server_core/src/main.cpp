@@ -1,8 +1,9 @@
 #include <iostream>
 #include <thread>
-#include <mutex>
 #include <vector>
 #include <algorithm>
+#include <string>
+#include <filesystem>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -18,57 +19,54 @@ namespace {
 constexpr int CONTROL_PORT = 2121; // non-privileged port for local testing
 constexpr int BACKLOG = 16;
 
-// TODO(you): if you need the "active session table" from spec
-// section 4.5, promote this into the ClientRegistry class sketched
-// in session.h so other code (e.g. a STAT/admin command) can query
-// it too. For now it's just used for the connect/disconnect log.
-std::mutex g_clientsMutex;
-std::vector<std::string> g_connectedClients; // protected by g_clientsMutex
+// TODO Fulfilled: Sử dụng ClientRegistry từ session.h để quản lý
+ftp::ClientRegistry g_clientRegistry;
 
 } // namespace
 
-// Runs entirely on its own thread — one per connected client. This is
-// the "Concurrency Control" the spec grades: each thread gets its own
-// Session (isolated cwd/auth/rename state), and the only shared state
-// it touches (g_connectedClients) is mutex-protected.
 void handleClientSession(int clientSocket, std::string clientId) {
     ftp::Session session;
     session.socketFd = clientSocket;
     session.clientId = clientId;
-    session.rootDir = "./ftp_root"; // TODO(you): per-user root vs shared root — your call
+    session.rootDir = "./ftp_root"; 
     session.cwd = "";
+
+    // Đảm bảo thư mục root tồn tại trước khi client thao tác
+    std::error_code ec;
+    std::filesystem::create_directories(session.rootDir, ec);
 
     std::string welcome = ftp::formatReply(ftp::SERVICE_READY, "Hybrid FTP server ready");
     send(clientSocket, welcome.c_str(), welcome.size(), 0);
 
     char buf[4096];
+    std::string recvBuffer; // Bộ đệm chứa các byte chưa phân giải
+
     while (true) {
         ssize_t n = recv(clientSocket, buf, sizeof(buf), 0);
-        if (n <= 0) break; // client disconnected or socket error
+        if (n <= 0) break; // Client ngắt kết nối hoặc lỗi socket
 
-        // TODO(you): this treats one recv() as one command line, which
-        // is NOT guaranteed over TCP — a single recv() can contain
-        // zero, one, or several "\r\n"-terminated lines, and a line
-        // can be split across two recv() calls. Before relying on
-        // this under real network conditions, buffer incoming bytes
-        // and split on "\r\n" yourself, keeping any trailing partial
-        // line for the next recv().
-        std::string line(buf, static_cast<size_t>(n));
-        std::string reply = ftp::handleCommand(line, session);
+        // TODO Fulfilled: Triển khai bộ đệm TCP an toàn
+        // Cộng dồn dữ liệu mới nhận vào bộ đệm tổng
+        recvBuffer.append(buf, static_cast<size_t>(n));
 
-        send(clientSocket, reply.c_str(), reply.size(), 0);
+        size_t pos = 0;
+        // Quét và trích xuất từng dòng lệnh hoàn chỉnh (kết thúc bằng \r\n)
+        while ((pos = recvBuffer.find("\r\n")) != std::string::npos) {
+            std::string line = recvBuffer.substr(0, pos);
+            recvBuffer.erase(0, pos + 2); // Xóa dòng đã xử lý và chuỗi \r\n khỏi bộ đệm
 
-        if (reply.rfind(std::to_string(ftp::GOODBYE), 0) == 0) {
-            break; // QUIT was handled — close this session
+            std::string reply = ftp::handleCommand(line, session);
+            send(clientSocket, reply.c_str(), reply.size(), 0);
+
+            if (reply.rfind(std::to_string(ftp::GOODBYE), 0) == 0) {
+                goto end_session; // Thoát hoàn toàn nếu nhận lệnh QUIT
+            }
         }
     }
 
+end_session:
     close(clientSocket);
-    {
-        std::lock_guard<std::mutex> lock(g_clientsMutex);
-        auto& v = g_connectedClients;
-        v.erase(std::remove(v.begin(), v.end(), clientId), v.end());
-    }
+    g_clientRegistry.remove(clientId); // Xóa client khỏi danh sách quản lý chung
     std::cout << "[server] client disconnected: " << clientId << std::endl;
 }
 
@@ -79,6 +77,7 @@ int main() {
         return 1;
     }
 
+    // Cho phép tái sử dụng port ngay lập tức sau khi tắt server
     int opt = 1;
     setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
@@ -108,18 +107,12 @@ int main() {
 
         std::string clientId = std::string(inet_ntoa(clientAddr.sin_addr)) +
                                 ":" + std::to_string(ntohs(clientAddr.sin_port));
-        {
-            std::lock_guard<std::mutex> lock(g_clientsMutex);
-            g_connectedClients.push_back(clientId);
-        }
+        
+        // Thêm client vào bảng phiên (session table)
+        g_clientRegistry.add(clientId);
         std::cout << "[server] client connected: " << clientId << std::endl;
 
-        // detach(): this thread lives on independently of this accept
-        // loop until the client disconnects.
-        // TODO(you): consider keeping std::thread handles (e.g. in a
-        // vector) and joining them on shutdown instead of detaching,
-        // if you need the server to exit cleanly rather than being
-        // killed.
+        // Tách thread để xử lý client độc lập, cho phép vòng lặp chính tiếp tục accept client mới
         std::thread(handleClientSession, clientSocket, clientId).detach();
     }
 
