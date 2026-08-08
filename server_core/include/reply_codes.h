@@ -15,6 +15,7 @@ enum ReplyCode : int {
     SERVICE_READY                 = 220,
     GOODBYE                        = 221,
     TRANSFER_COMPLETE             = 226,
+    ENTERING_PASSIVE_MODE         = 227,
     LOGIN_SUCCESSFUL               = 230,
     FILE_ACTION_OK                 = 250,
     PATHNAME_CREATED               = 257, // used by PWD/MKD to return the path

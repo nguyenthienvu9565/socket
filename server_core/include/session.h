@@ -1,56 +1,60 @@
 #pragma once
 #include <string>
 #include <filesystem>
+#include <vector>
+#include <memory>
+#include <mutex>
+#include <algorithm>
+#include "rdt_interface.h"
 
 namespace ftp {
 
-// One Session = one connected client's state. Created when a client
-// connects, destroyed when it disconnects. Each client thread owns
-// exactly one Session — no two threads touch the same Session, so it
-// does NOT need its own mutex. (A *table* of all sessions, if you add
-// one for logging/listing connected clients, DOES need a mutex — see
-// the TODO at the bottom of this file.)
 struct Session {
     int socketFd = -1;
-    std::string clientId;              // e.g. "ip:port", for logging
+    std::string clientId;              
 
     bool authenticated = false;
     std::string username;
 
-    // Root directory this client is sandboxed to (e.g. "./ftp_root").
-    // cwd must never be allowed to resolve outside this root — see
-    // resolveSafePath() in fs_handler.cpp.
     std::filesystem::path rootDir;
-    std::filesystem::path cwd;         // current working dir, relative to rootDir
-
-    // Set by RNFR, consumed by RNTO. Empty = no rename pending.
+    std::filesystem::path cwd;         
     std::string renameFromPath;
 
-    // Data-channel negotiation state (Active/Passive). Filled in by
-    // your PORT/PASV handlers once you implement them; read by
-    // transfer_handler.cpp when RETR/STOR actually need to move bytes.
     bool passiveMode = false;
-    std::string dataPeerHost;          // for PORT (active) mode
+    std::string dataPeerHost;          
     int dataPeerPort = -1;
+
+    // Owns the data channel for the CURRENT transfer setup, so it
+    // survives between the PASV/PORT call and the later LIST/RETR/STOR
+    // call that actually uses it. Each FTP command is a separate call
+    // to handleCommand() — a channel created as a local variable
+    // inside the PASV branch would be destroyed the moment that call
+    // returns, leaving nothing for the next command to bind to.
+    // nullptr until PASV or PORT sets one up; reset back to nullptr
+    // once a transfer finishes (see command_dispatcher.cpp).
+    std::unique_ptr<IRDTChannel> dataChannel;
 };
 
-// TODO(you): the spec (section 4.5) wants the server log to show a
-// live "active session table" of connected clients. If you need that,
-// add something like:
-//
-// class ClientRegistry {
-// public:
-//     void add(const std::string& clientId);
-//     void remove(const std::string& clientId);
-//     std::vector<std::string> list() const;
-// private:
-//     mutable std::mutex mutex_;
-//     std::vector<std::string> clients_; // protected by mutex_
-// };
-//
-// Every method must take the lock (std::lock_guard<std::mutex>)
-// before touching clients_, since every client thread calls this
-// concurrently — this is the actual "Concurrency Control" the spec
-// is grading you on, not just spawning threads.
+// Hoàn thành TODO: Bảng Session Table (Concurrency Control)
+class ClientRegistry {
+public:
+    void add(const std::string& clientId) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        clients_.push_back(clientId);
+    }
+
+    void remove(const std::string& clientId) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        clients_.erase(std::remove(clients_.begin(), clients_.end(), clientId), clients_.end());
+    }
+
+    std::vector<std::string> list() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return clients_;
+    }
+private:
+    mutable std::mutex mutex_;
+    std::vector<std::string> clients_; 
+};
 
 } // namespace ftp
