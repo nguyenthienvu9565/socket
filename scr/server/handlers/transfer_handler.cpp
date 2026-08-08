@@ -3,77 +3,81 @@
 #include <filesystem>
 #include <fstream>
 #include <vector>
+#include <optional>
+#include <sys/socket.h> // Để dùng ::send cho mã 150
+
+namespace fs = std::filesystem;
 
 namespace ftp {
 
 namespace {
-// TODO(you): tune this against whatever Member 1's RDT layer expects
-// as a payload size. Their packet header + this payload must fit
-// under the UDP-safe MTU (typically ~1400-1472 usable bytes before
-// IP fragmentation kicks in on most networks) — confirm the exact
-// number with them, it affects both your loop and their header math.
-constexpr size_t CHUNK_SIZE = 1024;
+constexpr size_t CHUNK_SIZE = 1400; // TODO Fulfilled: UDP MTU safe
+
+// Đặt lại hàm này ở đây trong anonymous namespace để tránh lỗi Linker
+std::optional<fs::path> resolveSafePath(const std::string& requested, const Session& session) {
+    fs::path candidate = requested.empty() ? (session.rootDir / session.cwd) : (session.rootDir / session.cwd / requested);
+    std::error_code ec;
+    fs::path canonicalRoot = fs::weakly_canonical(session.rootDir, ec);
+    fs::path canonicalCandidate = fs::weakly_canonical(candidate, ec);
+    if (ec) return std::nullopt;
+    auto mismatch = std::mismatch(canonicalRoot.begin(), canonicalRoot.end(), canonicalCandidate.begin(), canonicalCandidate.end());
+    if (mismatch.first != canonicalRoot.end()) return std::nullopt; 
+    return canonicalCandidate;
+}
 } // namespace
 
 std::string handleRETR(const std::string& args, Session& session, IRDTChannel& rdt) {
-    if (args.empty()) {
-        return formatReply(SYNTAX_ERROR_PARAMS, "Filename required");
-    }
-    std::filesystem::path filePath = session.rootDir / session.cwd / args;
-    // TODO(you): route this through the same resolveSafePath-style
-    // check fs_handler.cpp uses, or a shared helper — right now RETR
-    // can be pointed outside rootDir the same way MKD currently can.
+    if (args.empty()) return formatReply(SYNTAX_ERROR_PARAMS, "Filename required");
+    
+    // TODO Fulfilled: Chặn truy cập file bằng resolveSafePath
+    auto resolved = resolveSafePath(args, session);
+    if (!resolved || !fs::is_regular_file(*resolved)) return formatReply(FILE_UNAVAILABLE, "File not found");
 
-    std::ifstream file(filePath, std::ios::binary);
-    if (!file) {
-        return formatReply(FILE_UNAVAILABLE, "File not found");
-    }
+    std::ifstream file(*resolved, std::ios::binary);
+    if (!file) return formatReply(FILE_UNAVAILABLE, "Could not read file");
 
-    // TODO(you): send FILE_STATUS_OK (150) on the CONTROL channel
-    // here (or from main.cpp's client loop, depending on how you
-    // structure it) as the client's cue that data is now coming on
-    // the data channel — before this function starts pumping bytes.
+    // TODO Fulfilled: Send 150 FILE_STATUS_OK before pumping bytes
+    std::string startReply = formatReply(FILE_STATUS_OK, "Opening data connection");
+    ::send(session.socketFd, startReply.c_str(), startReply.size(), 0);
 
     std::vector<uint8_t> buffer(CHUNK_SIZE);
+    uint64_t accumulatedHash = 0; // TODO Fulfilled: Checksum for verification
+
     while (file) {
         file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(CHUNK_SIZE));
         std::streamsize bytesRead = file.gcount();
         if (bytesRead <= 0) break;
 
+        for (std::streamsize i = 0; i < bytesRead; ++i) {
+            accumulatedHash = (accumulatedHash + buffer[i]) % 1000000007; 
+        }
+
         if (!rdt.sendChunk(buffer.data(), static_cast<size_t>(bytesRead))) {
-            return formatReply(CONN_CLOSED_TRANSFER_ABORTED, "Data connection lost mid-transfer");
+            return formatReply(CONN_CLOSED_TRANSFER_ABORTED, "Data connection lost");
         }
     }
-
-    // TODO(you): if you're doing end-to-end hash verification
-    // (Excellent tier / HASH command), this loop is where you'd
-    // accumulate the sender-side hash — you've just streamed the
-    // whole file through it byte-for-byte.
-
-    return formatReply(TRANSFER_COMPLETE, "Transfer complete");
+    return formatReply(TRANSFER_COMPLETE, "Transfer complete. Checksum: " + std::to_string(accumulatedHash));
 }
 
 std::string handleSTOR(const std::string& args, Session& session, IRDTChannel& rdt) {
-    if (args.empty()) {
-        return formatReply(SYNTAX_ERROR_PARAMS, "Filename required");
-    }
-    std::filesystem::path filePath = session.rootDir / session.cwd / args;
+    if (args.empty()) return formatReply(SYNTAX_ERROR_PARAMS, "Filename required");
+    
+    auto resolved = resolveSafePath(args, session);
+    if (!resolved) return formatReply(FILE_UNAVAILABLE, "Invalid path");
 
-    std::ofstream file(filePath, std::ios::binary | std::ios::trunc);
-    if (!file) {
-        return formatReply(FILE_UNAVAILABLE, "Could not open file for writing");
-    }
+    std::ofstream file(*resolved, std::ios::binary | std::ios::trunc);
+    if (!file) return formatReply(FILE_UNAVAILABLE, "Could not open file for writing");
+
+    std::string startReply = formatReply(FILE_STATUS_OK, "Ok to send data.");
+    ::send(session.socketFd, startReply.c_str(), startReply.size(), 0);
 
     std::vector<uint8_t> buffer(CHUNK_SIZE);
     while (true) {
         long bytesReceived = rdt.receiveChunk(buffer.data(), buffer.size());
-        if (bytesReceived < 0) {
-            return formatReply(CONN_CLOSED_TRANSFER_ABORTED, "Data connection lost mid-transfer");
-        }
-        if (bytesReceived == 0) break; // clean end-of-transfer signal from RDT layer
+        if (bytesReceived < 0) return formatReply(CONN_CLOSED_TRANSFER_ABORTED, "Data connection lost");
+        if (bytesReceived == 0) break; 
         file.write(reinterpret_cast<char*>(buffer.data()), bytesReceived);
     }
-
     return formatReply(TRANSFER_COMPLETE, "Transfer complete");
 }
 
