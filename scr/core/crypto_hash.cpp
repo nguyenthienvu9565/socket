@@ -1,4 +1,4 @@
-#include "../../include/core/crypto_hash.h"
+#include "../include/core/crypto_hash.h"
 #include <iostream>
 #include <fstream>
 #include <windows.h>

@@ -1,7 +1,7 @@
 #pragma once
 #include <string>
-#include "../session.h"
-#include "../rdt_interface.h"
+#include "session.h"
+#include "rdt_interface.h"
 
 namespace ftp {
 

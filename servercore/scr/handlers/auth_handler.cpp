@@ -1,4 +1,4 @@
-#include "auth_handler.h"
+#include "handlers/auth_handler.h"
 #include "reply_codes.h"
 #include <unordered_map>
 

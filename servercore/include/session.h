@@ -5,13 +5,12 @@
 #include <memory>
 #include <mutex>
 #include <algorithm>
-#include <winsock2.h>
 #include "rdt_interface.h"
 
 namespace ftp {
 
 struct Session {
-    SOCKET socketFd = INVALID_SOCKET;
+    int socketFd = -1;
     std::string clientId;              
 
     bool authenticated = false;
@@ -25,9 +24,18 @@ struct Session {
     std::string dataPeerHost;          
     int dataPeerPort = -1;
 
+    // Owns the data channel for the CURRENT transfer setup, so it
+    // survives between the PASV/PORT call and the later LIST/RETR/STOR
+    // call that actually uses it. Each FTP command is a separate call
+    // to handleCommand() — a channel created as a local variable
+    // inside the PASV branch would be destroyed the moment that call
+    // returns, leaving nothing for the next command to bind to.
+    // nullptr until PASV or PORT sets one up; reset back to nullptr
+    // once a transfer finishes (see command_dispatcher.cpp).
     std::unique_ptr<IRDTChannel> dataChannel;
 };
 
+// Hoàn thành TODO: Bảng Session Table (Concurrency Control)
 class ClientRegistry {
 public:
     void add(const std::string& clientId) {

@@ -1,5 +1,5 @@
-#include "../../include/core/rdt.h"
-#include "../../include/core/packet_format.h"
+#include "../include/core/rdt.h"
+#include "../include/core/packet_format.h"
 #include <iostream>
 #include <fstream>
 #include <vector>

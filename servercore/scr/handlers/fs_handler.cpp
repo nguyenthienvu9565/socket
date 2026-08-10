@@ -1,4 +1,4 @@
-#include "fs_handler.h"
+#include "handlers/fs_handler.h"
 #include "reply_codes.h"
 #include "rdt_interface.h"
 #include <filesystem>
@@ -29,7 +29,7 @@ std::optional<fs::path> resolveSafePath(const std::string& requested, const Sess
     auto mismatch = std::mismatch(canonicalRoot.begin(), canonicalRoot.end(),
                                    canonicalCandidate.begin(), canonicalCandidate.end());
     if (mismatch.first != canonicalRoot.end()) {
-        return std::nullopt; 
+        return std::nullopt; // candidate escapes root
     }
     return canonicalCandidate;
 }
@@ -60,7 +60,7 @@ std::string handleCWD(const std::string& args, Session& session) {
         return formatReply(FILE_UNAVAILABLE, "Directory not found");
     }
     session.cwd = fs::relative(*resolved, session.rootDir);
-    if (session.cwd == ".") session.cwd = ""; 
+    if (session.cwd == ".") session.cwd = ""; // "." means "at root"
     return formatReply(FILE_ACTION_OK, "Directory changed to /" + session.cwd.generic_string());
 }
 
@@ -110,15 +110,13 @@ std::string handleLIST(const std::string& args, Session& session, IRDTChannel& r
         if (entry.is_regular_file()) {
             out << std::setw(10) << fs::file_size(entry, ec) << " ";
         } else {
-            out << std::setw(10) << 4096 << " "; 
+            out << std::setw(10) << 4096 << " "; // Default directory sizing
         }
         out << entry.path().filename().string() << "\r\n";
     }
 
     std::string payload = out.str();
-    std::vector<char> buffer(payload.begin(), payload.end());
-    
-    if (!rdt.sendBuffer(buffer)) {
+    if (!rdt.sendChunk(reinterpret_cast<const uint8_t*>(payload.c_str()), payload.size())) {
          return formatReply(CONN_CLOSED_TRANSFER_ABORTED, "Data connection failed");
     }
     return formatReply(TRANSFER_COMPLETE, "Directory send OK.");
