@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="BackendCodeEditorMiscSettings">
+    <option name="/Default/Housekeeping/FeatureSuggestion/FeatureSuggestionManager/DisabledSuggesters/=SwitchToGoToActionSuggester/@EntryIndexedValue" value="true" type="bool" />
+    <option name="/Default/Housekeeping/GlobalSettingsUpgraded/IsUpgraded/@EntryValue" value="true" type="bool" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="a532f2b0-160f-45cb-81c4-3505e269f433" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/../../server_core/CMakeLists.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/Giải thích Kiến trúc Hybrid FTP Server.pdf" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/README_vi.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/ftp_root/data.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/include/.idea/editor.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/include/.idea/include.iml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/include/.idea/modules.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/include/.idea/vcs.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/include/.idea/workspace.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/server_core" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src/command_dispatcher.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src/ftp_root/test_upload.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src/ftp_server" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src/ftp_server.dSYM/Contents/Info.plist" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src/ftp_server.dSYM/Contents/Resources/DWARF/ftp_server" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src/ftp_server.dSYM/Contents/Resources/Relocations/aarch64/ftp_server.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src/handlers/auth_handler.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src/handlers/fs_handler.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src/handlers/transfer_handler.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src/main.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src/mock_rdt.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src/reply_codes.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src_server_core/command_dispatcher.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src_server_core/handlers/auth_handler.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src_server_core/handlers/fs_handler.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src_server_core/handlers/transfer_handler.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src_server_core/main.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src_server_core/mock_rdt.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/../../server_core/src_server_core/reply_codes.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/command_dispatcher.h" beforeDir="false" afterPath="$PROJECT_DIR$/command_dispatcher.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/handlers/fs_handler.h" beforeDir="false" afterPath="$PROJECT_DIR$/handlers/fs_handler.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/reply_codes.h" beforeDir="false" afterPath="$PROJECT_DIR$/reply_codes.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/session.h" beforeDir="false" afterPath="$PROJECT_DIR$/session.h" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="ClangdSettings">
+    <option name="formatViaClangd" value="false" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$/../.." />
+  </component>
+  <component name="ProjectApplicationVersion">
+    <option name="ide" value="CLion" />
+    <option name="majorVersion" value="2025" />
+    <option name="minorVersion" value="2.3" />
+    <option name="productBranch" value="Classic" />
+  </component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "associatedIndex": 2
+}]]></component>
+  <component name="ProjectId" id="3HdxjkV46qghL92crKTynhDtyYK" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.RadMigrateCodeStyle": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.cidr.known.project.marker": "true",
+    "RunOnceActivity.readMode.enableVisualFormatting": "true",
+    "cf.first.check.clang-format": "false",
+    "cidr.known.project.marker": "true",
+    "git-widget-placeholder": "nhanh-cua-truc",
+    "vue.rearranger.settings.migration": "true"
+  }
+}]]></component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="a532f2b0-160f-45cb-81c4-3505e269f433" name="Changes" comment="" />
+      <created>1786211884096</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1786211884096</updated>
+      <workItem from="1786211885157" duration="28000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+</project>
