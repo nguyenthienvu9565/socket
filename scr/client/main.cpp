@@ -1,557 +1,460 @@
+// ===================================================================
+// main.cpp - Hybrid FTP Client
+// Phien ban: 5.0 - Tich hop kiem tra toan ven bang MD5 Hash
+//
+// Luong kiem tra toan ven:
+//   STOR (Upload):
+//     1. Bam file truoc khi gui: calculate_file_hash(file) -> localHash
+//     2. Gui file: rdt_send_file_stream(dataSock, dataDest, file)
+//     3. Gui hash : rdt_send_buffer(dataSock, dataDest, localHash)
+//     4. Nhan phan hoi 226 qua control channel
+//
+//   RETR (Download):
+//     1. Nhan file : rdt_receive_file_stream(dataSock, file)
+//     2. Bam file vua nhan: calculate_file_hash(file) -> localHash
+//     3. Nhan hash tu Server: rdt_receive_buffer(dataSock) -> serverHash
+//     4. So sanh localHash == serverHash -> bao nguyen ven hoac canh bao
+//     5. Nhan phan hoi 226 qua control channel
+//
+// Tat ca gui/nhan deu qua ham RDT, khong dung send()/recv() thuan.
+// ===================================================================
+
 #include <iostream>
 #include <string>
-#include <fstream>      // std::ifstream/ofstream + std::ios::binary
-#include <cstdint>      // uint64_t
+#include <fstream>
+#include <cstdint>
 
 #include "../../include/client/client_ftp.h"
 #include "../../include/client/client_cli.h"
+#include "../../include/core/rdt.h"
+#include "../../include/core/crypto_hash.h"   // calculate_file_hash()
 
 // ===================================================================
-// computeChecksum - Tinh checksum cua file local de kiem tra toan ven
+// buildCmd - Tao format lenh FTP de gui qua rdt_send_buffer
 //
-// Dung cung thuat toan voi Server (transfer_handler.cpp):
-//   accumulatedHash = (accumulatedHash + byte) % 1000000007
-// Neu checksum local == checksum Server tra ve trong ma 226 thi
-// file da duoc truyen nguyen ven, khong bi loi hay mat goi tin.
+// Dau ra: vector<char> chua chuoi "CMD arg\r\n"
+// Vi du:
+//   buildCmd("USER", "admin") -> "USER admin\r\n" dang bytes
+//   buildCmd("PASV", "")      -> "PASV\r\n"       dang bytes
 // ===================================================================
-static long long computeChecksum(const std::string& filePath) {
-    std::ifstream file(filePath, std::ios::binary);
-    if (!file.is_open()) return -1;
+static std::vector<char> buildCmd(const std::string& cmd, const std::string& arg) {
+    std::string msg = arg.empty() ? cmd : (cmd + " " + arg);
+    msg += "\r\n";
+    return std::vector<char>(msg.begin(), msg.end());
+}
 
-    long long hash = 0;
-    char byte;
-    while (file.get(byte)) {
-        // Ep kieu sang unsigned char truoc khi cong vao hash
-        // de tranh so am lam sai ket qua tinh toan
-        hash = (hash + (unsigned char)byte) % 1000000007;
+// ===================================================================
+// parseResp - Chuyen du lieu tu rdt_receive_buffer thanh chuoi phan hoi
+//
+// rdt_receive_buffer tra ve vector<char>, parseResp chuyen sang string
+// de xu ly ma phan hoi, in ra man hinh, so sanh, v.v.
+// ===================================================================
+static std::string parseResp(const std::vector<char>& data) {
+    if (data.empty()) return "";
+    return std::string(data.begin(), data.end());
+}
+
+// ===================================================================
+// sendCmd - Gui lenh FTP len Server qua RDT
+//
+// Buoc 1: buildCmd -> "CMD arg\r\n" -> vector<char>
+// Buoc 2: rdt_send_buffer -> gui qua UDP (ACK + Timeout + Retransmit)
+// ===================================================================
+static bool sendCmd(SOCKET sock, const sockaddr_in& dest,
+                    const std::string& cmd, const std::string& arg = "") {
+    std::vector<char> payload = buildCmd(cmd, arg);
+    if (!rdt_send_buffer(sock, dest, payload)) {
+        std::cerr << "  [RDT Error] Gui lenh that bai: " << cmd << "\n";
+        return false;
     }
-    return hash;
+    return true;
 }
 
 // ===================================================================
-// parseChecksumFrom226 - Trich xuat gia tri checksum tu phan hoi 226
+// readResp - Nhan phan hoi tu Server qua RDT
 //
-// Server gui ve dang: "226 Transfer complete. Checksum: 123456"
-// Ham nay tim chu "Checksum: " va lay so phia sau no.
+// Buoc 1: rdt_receive_buffer -> nhan bytes tu Server
+// Buoc 2: parseResp          -> chuyen sang std::string
 // ===================================================================
-static long long parseChecksumFrom226(const std::string& response) {
-    // Tim vi tri cua chu "Checksum: " trong chuoi phan hoi
-    std::string keyword = "Checksum: ";
-    size_t pos = response.find(keyword);
-    if (pos == std::string::npos) return -1; // Khong co checksum trong phan hoi
-
-    // Lay phan so phia sau chu "Checksum: "
-    std::string numStr = response.substr(pos + keyword.size());
-    try {
-        return std::stoll(numStr);
-    } catch (...) {
-        return -1;
-    }
+static std::string readResp(SOCKET sock) {
+    return parseResp(rdt_receive_buffer(sock));
 }
 
 // ===================================================================
-//  RDT STUB FUNCTIONS - Placeholder cho module truyen file tin cay
-//
-//  Cac ham nay la cac stub (ban mau) doi cho den khi module RDT
-//  cua Thanh vien 3 duoc tich hop vao du an.
-//
-//  De tich hop:
-//    1. Xoa cac ham stub duoi day
-//    2. #include header file cua module RDT
-//    3. Dam bao chu ky ham khop voi dinh nghia trong module RDT
-//
-//  Yeu cau ky thuat voi module RDT that su:
-//    - Dung SOCK_DGRAM (UDP) de truyen du lieu
-//    - Phai co Sequence Number (so thu tu goi tin)
-//    - Phai co Co che ACK + Timeout + Retransmit
-//    - Doc/ghi file PHAI dung co std::ios::binary (file nhi phan)
-// ===================================================================
-
-// rdt_receive_file: Nhan file tu Server ve va luu ra dia
-// saveFilePath : Duong dan luu file (VD: "anh.jpg", "D:/Downloads/video.mp4")
-// serverIP     : IP cua Server (de loc goi tin den dung noi)
-// dataPort     : UDP Port ma Server dang gui du lieu
-// fileSize     : Kich thuoc file du kien (0 = khong biet truoc)
-// Tra ve       : true neu nhan thanh cong, false neu that bai
-static bool rdt_receive_file(const std::string& saveFilePath,
-                              const std::string& serverIP,
-                              int dataPort,
-                              uint64_t fileSize) {
-    // [STUB] Can duoc thay bang implementation RDT thuc te
-    std::cout << "\n  [RDT Stub] rdt_receive_file() chua duoc implement.\n";
-    std::cout << "             - Luu file: " << saveFilePath << "\n";
-    std::cout << "             - Server UDP: " << serverIP << ":" << dataPort << "\n";
-    if (fileSize > 0)
-        std::cout << "             - Kich thuoc: " << fileSize << " bytes\n";
-    std::cout << "             Tich hop module RDT de dung tinh nang nay.\n\n";
-    return false;
-}
-
-// rdt_send_file: Doc file nhi phan va gui len Server qua UDP
-// sourceFilePath : Duong dan file can upload tren may Client
-// serverIP       : IP cua Server nhan du lieu
-// dataPort       : UDP Port ma Server dang lang nghe
-// Tra ve         : true neu gui thanh cong, false neu that bai
-static bool rdt_send_file(const std::string& sourceFilePath,
-                           const std::string& serverIP,
-                           int dataPort) {
-    // [STUB] Can duoc thay bang implementation RDT thuc te
-    std::cout << "\n  [RDT Stub] rdt_send_file() chua duoc implement.\n";
-    std::cout << "             - File nguon: " << sourceFilePath << "\n";
-    std::cout << "             - Server UDP: " << serverIP << ":" << dataPort << "\n";
-    std::cout << "             Tich hop module RDT de dung tinh nang nay.\n\n";
-    return false;
-}
-
-// rdt_receive_listing: Nhan chuoi van ban danh sach thu muc qua UDP
-// serverIP  : IP cua Server gui du lieu
-// dataPort  : UDP Port ma Server dang gui danh sach
-// Tra ve    : Chuoi van ban chua danh sach, hoac chuoi rong neu loi
-static std::string rdt_receive_listing(const std::string& serverIP, int dataPort) {
-    // [STUB] Can duoc thay bang implementation RDT thuc te
-    std::cout << "\n  [RDT Stub] rdt_receive_listing() chua duoc implement.\n";
-    std::cout << "             - Server UDP: " << serverIP << ":" << dataPort << "\n\n";
-    return "";
-}
-
-// ===================================================================
-// handleReplyCode - May Trang Thai xu ly ma phan hoi FTP (Muc 2.3)
-//
-// Cac nhom ma theo chuan RFC 959:
-//   1xx - Positive Preliminary Reply: Dang xu ly, can doi tiep
-//   2xx - Positive Completion Reply : Lenh hoan thanh thanh cong
-//   3xx - Positive Intermediate     : Can them thong tin trung gian
-//   4xx - Transient Negative Reply  : Loi tam thoi (co the thu lai)
-//   5xx - Permanent Negative Reply  : Loi vinh vien (khong thu lai)
+// handleReplyCode - May trang thai xu ly ma phan hoi FTP (RFC 959)
 // ===================================================================
 static void handleReplyCode(int code, const std::string& response) {
     if (code >= 100 && code < 200) {
-        // Nhom 1xx: Server chap nhan va dang bat dau xu ly
-        // Ma pho bien: 125 (da co ket noi du lieu), 150 (dang mo ket noi)
-        std::cout << "  [>>] Ma " << code << ": Server dang mo ket noi du lieu...\n";
-    }
-    else if (code >= 200 && code < 300) {
-        // Nhom 2xx: Lenh thuc hien thanh cong
-        // Ma pho bien: 200 (OK), 220 (san sang), 221 (bye), 226 (xong), 230 (login ok), 250 (ok)
+        std::cout << "  [>>] Ma " << code << ": Server dang mo Data Channel...\n";
+    } else if (code >= 200 && code < 300) {
         switch (code) {
-        case 220: std::cout << "  [OK] Ma 220: Server san sang phuc vu.\n";  break;
-        case 221: std::cout << "  [OK] Ma 221: Server da dong phien.\n";      break;
-        case 226: std::cout << "  [OK] Ma 226: Truyen du lieu hoan tat.\n";   break;
-        case 227: /* Xu ly o ben duoi trong switch(code) chinh */             break;
-        case 230: std::cout << "  [OK] Ma 230: Dang nhap thanh cong!\n";     break;
-        case 250: std::cout << "  [OK] Ma 250: Thao tac file hoan thanh.\n"; break;
-        default:  std::cout << "  [OK] Ma " << code << ": Thanh cong.\n";    break;
+        case 220: std::cout << "  [OK] Ma 220: Server san sang.\n";         break;
+        case 221: std::cout << "  [OK] Ma 221: Server dong phien.\n";        break;
+        case 226: std::cout << "  [OK] Ma 226: Truyen du lieu hoan tat.\n";  break;
+        case 227: /* xu ly trong switch chinh */                              break;
+        case 230: std::cout << "  [OK] Ma 230: Dang nhap thanh cong!\n";    break;
+        case 250: std::cout << "  [OK] Ma 250: Thao tac hoan thanh.\n";     break;
+        default:  std::cout << "  [OK] Ma " << code << ": Thanh cong.\n";   break;
         }
-    }
-    else if (code >= 300 && code < 400) {
-        // Nhom 3xx: Can them buoc trung gian
-        // Ma pho bien: 331 (can password), 350 (can RNTO sau RNFR)
-        if (code == 331) {
-            std::cout << "  [..] Ma 331: Ten dang nhap hop le. Hay nhap mat khau:\n";
-            std::cout << "              Go lenh: PASS <mat_khau>\n";
-        } else if (code == 350) {
-            std::cout << "  [..] Ma 350: San sang doi ten. Hay gui lenh RNTO <ten_moi>.\n";
-        } else {
-            std::cout << "  [..] Ma " << code << ": Can buoc trung gian tiep theo.\n";
-        }
-    }
-    else if (code >= 400 && code < 500) {
-        // Nhom 4xx: Loi tam thoi - co the thu lai sau
-        // Ma pho bien: 421 (Service unavailable), 425 (khong mo duoc data channel), 450 (file busy)
+    } else if (code >= 300 && code < 400) {
+        if      (code == 331) std::cout << "  [..] Ma 331: Can mat khau -> PASS <password>\n";
+        else if (code == 350) std::cout << "  [..] Ma 350: San sang doi ten -> RNTO <ten_moi>\n";
+        else                  std::cout << "  [..] Ma " << code << ": Can buoc tiep theo.\n";
+    } else if (code >= 400 && code < 500) {
         std::cerr << "  [!!] Ma " << code << " (Loi tam thoi): " << response;
-        std::cerr << "       Server hien tai ban hoac file dang bi khoa. Thu lai sau.\n";
-    }
-    else if (code >= 500) {
-        // Nhom 5xx: Loi vinh vien - khong thu lai
-        // Ma pho bien: 530 (chua login), 550 (file khong ton tai/quyen), 502 (lenh chua ho tro)
+    } else if (code >= 500) {
         std::cerr << "  [XX] Ma " << code << " (Loi): " << response;
-        if (code == 530) {
-            std::cerr << "       Chua dang nhap hoac phien het han. Hay dung USER/PASS.\n";
-        } else if (code == 550) {
-            std::cerr << "       File/thu muc khong ton tai hoac khong co quyen truy cap.\n";
-        } else if (code == 502) {
-            std::cerr << "       Lenh nay Server chua ho tro.\n";
-        }
-    }
-    else if (code == -1) {
-        // Phan hoi khong ro rang (khong dung dinh dang FTP)
+        if      (code == 530) std::cerr << "       Chua dang nhap. Dung USER/PASS.\n";
+        else if (code == 550) std::cerr << "       File khong ton tai hoac khong co quyen.\n";
+        else if (code == 502) std::cerr << "       Lenh chua duoc ho tro.\n";
+    } else if (code == -1) {
         std::cerr << "  [??] Phan hoi khong xac dinh: " << response << "\n";
     }
 }
 
 // ===================================================================
-// main - Diem khoi dau chuong trinh Hybrid FTP Client
-//
-// Luong hoat dong tong quat:
-//   1. Hien thi banner va cho nguoi dung nhap IP/Port Server
-//   2. Ket noi TCP toi Control Channel
-//   3. Doc thong diep chao (Ma 220) tu Server
-//   4. Vong lap CLI: nhan lenh -> gui TCP -> xu ly phan hoi -> [UDP neu can]
-//   5. Ket thuc: gui QUIT -> dong socket
-//
-// Tich hop Data Channel (UDP):
-//   - Nguoi dung PHAI gui PASV hoac PORT truoc lenh RETR/STOR/LIST
-//   - Khi nhan ma 227 (PASV OK): luu IP/Port data channel
-//   - Khi nhan ma 150 (Opening data): kich hoat luong RDT tuong ung
+// main
 // ===================================================================
 int main() {
-    // ---------------------------------------------------------------
-    // BUOC 1: Hien thi banner chao
-    // ---------------------------------------------------------------
+    // BUOC 1: Banner
     std::cout << "\n";
     std::cout << "  +==============================================================+\n";
-    std::cout << "  |      HYBRID FTP CLIENT  (TCP Control  +  UDP Data RDT)      |\n";
-    std::cout << "  |      Phien ban: 2.0 | Ho tro: Active/Passive Mode           |\n";
-    std::cout << "  +==============================================================+\n";
-    std::cout << "\n";
+    std::cout << "  |      HYBRID FTP CLIENT  -  Giao tiep thong nhat qua RDT     |\n";
+    std::cout << "  |      Phien ban: 5.0 | Kiem tra toan ven bang MD5 Hash       |\n";
+    std::cout << "  +==============================================================+\n\n";
 
-    // ---------------------------------------------------------------
-    // BUOC 2: Nhap thong tin ket noi tu ban phim
-    // Khong hardcode IP/Port: cho phep Client ket noi den bat ky Server nao
-    // ---------------------------------------------------------------
+    // BUOC 2: Nhap IP / Port Server
     std::string serverIP;
-    int         serverPort  = 2121;
+    int         serverPort = 2121;
     std::string portStr;
 
-    std::cout << "  Nhap dia chi IP Server  [mac dinh: 127.0.0.1] : ";
+    std::cout << "  Nhap IP Server  [mac dinh: 127.0.0.1] : ";
     std::getline(std::cin, serverIP);
     if (serverIP.empty()) serverIP = "127.0.0.1";
 
-    std::cout << "  Nhap Port Control       [mac dinh: 2121]      : ";
+    std::cout << "  Nhap Port       [mac dinh: 2121]      : ";
     std::getline(std::cin, portStr);
     if (!portStr.empty()) {
         try {
             serverPort = std::stoi(portStr);
-            if (serverPort <= 0 || serverPort > 65535) {
-                std::cerr << "  [Canh bao] Port khong hop le, dung mac dinh 2121.\n";
-                serverPort = 2121;
-            }
-        } catch (...) {
-            std::cerr << "  [Canh bao] Port khong phai so, dung mac dinh 2121.\n";
-            serverPort = 2121;
-        }
+            if (serverPort <= 0 || serverPort > 65535) serverPort = 2121;
+        } catch (...) { serverPort = 2121; }
     }
     std::cout << "\n";
 
-    // ---------------------------------------------------------------
-    // BUOC 3: Khoi tao doi tuong va ket noi TCP
-    // ---------------------------------------------------------------
-    ClientFTP ftpClient;
-    std::cout << "  Dang ket noi toi " << serverIP << ":" << serverPort << " ...\n";
-
-    if (!ftpClient.connectServer(serverIP, serverPort)) {
-        std::cerr << "\n  [Loi] Khong the ket noi toi Server.\n";
-        std::cerr << "        - Kiem tra Server co dang chay khong\n";
-        std::cerr << "        - Kiem tra IP va Port da nhap dung chua\n";
-        std::cerr << "        - Kiem tra Firewall co chan ket noi khong\n\n";
+    // BUOC 3: Khoi tao Winsock (1 lan duy nhat)
+    if (!rdt_init()) {
+        std::cerr << "  [Loi] Khoi tao Winsock that bai!\n";
         return 1;
     }
 
-    // Hien thi trang thai ket noi len console
+    // BUOC 4: Tao UDP socket va luu dia chi Server
+    ClientFTP ftpClient;
+    std::cout << "  Dang khoi tao Control Channel toi " << serverIP << ":" << serverPort << " ...\n";
+
+    if (!ftpClient.connectServer(serverIP, serverPort)) {
+        std::cerr << "\n  [Loi] Khong the ket noi toi Server.\n";
+        rdt_cleanup();
+        return 1;
+    }
     ClientCLI::printStatus(serverIP, serverPort, true);
 
-    // ---------------------------------------------------------------
-    // BUOC 4: Doc thong diep chao mung tu Server (Ma 220)
-    // ---------------------------------------------------------------
-    std::string welcomeMsg = ftpClient.readResponse();
+    SOCKET      ctrlSock = ftpClient.getSocket();
+    sockaddr_in ctrlDest = ftpClient.getServerAddr();
+
+    // BUOC 5: Doc thong diep chao (Ma 220) qua rdt_receive_buffer
+    std::string welcomeMsg = readResp(ctrlSock);
     if (!welcomeMsg.empty()) {
         std::cout << "  Server: " << welcomeMsg;
         handleReplyCode(ftpClient.getReplyCode(welcomeMsg), welcomeMsg);
     }
-
-    // Hien thi bang huong dan su dung
     ClientCLI::printHelp();
 
-    // ---------------------------------------------------------------
-    // BUOC 5: Vong lap CLI chinh
-    //
-    // Bien trang thai Data Channel:
-    //   dataChannelIP   : IP cua Server se gui/nhan file qua UDP
-    //   dataChannelPort : Port UDP tuong ung (0 = chua thiet lap)
-    //   lastCmd / lastArg : lenh va tham so vua gui de xu ly phan hoi
-    // ---------------------------------------------------------------
-    std::string dataChannelIP   = serverIP;
+    // BUOC 6: Vong lap CLI
     int         dataChannelPort = 0;
-    std::string lastCmd         = "";
-    std::string lastArg         = "";
+    sockaddr_in dataDest;
+    ZeroMemory(&dataDest, sizeof(dataDest));
 
+    std::string lastCmd;
+    std::string lastArg;
     std::string inputLine;
-    while (true) {
-        // Hien thi trang thai data channel trong prompt neu da thiet lap
-        if (dataChannelPort > 0) {
-            std::cout << "ftp [DataReady:" << dataChannelPort << "]> ";
-        } else {
-            std::cout << "ftp> ";
-        }
 
-        // Doc dong lenh tu nguoi dung
-        if (!std::getline(std::cin, inputLine)) break;  // EOF (Ctrl+Z/Ctrl+D)
+    while (true) {
+        if (dataChannelPort > 0)
+            std::cout << "ftp [DataReady:" << dataChannelPort << "]> ";
+        else
+            std::cout << "ftp> ";
+
+        if (!std::getline(std::cin, inputLine)) break;
         if (inputLine.empty()) continue;
 
-        // Kiem tra va phan tich cu phap lenh
         std::string cmd, arg;
-        if (!ClientCLI::parseAndValidate(inputLine, cmd, arg)) {
-            continue;  // Cu phap sai, yeu cau nhap lai
-        }
+        if (!ClientCLI::parseAndValidate(inputLine, cmd, arg)) continue;
 
-        // -----------------------------------------------------------
-        // Xu ly lenh QUIT: gui Server roi thoat vong lap
-        // -----------------------------------------------------------
+        // --- QUIT ---
         if (cmd == "QUIT") {
             std::cout << "  Dang ngat ket noi...\n";
-            ftpClient.sendCommand("QUIT");
-            std::string quitResp = ftpClient.readResponse();
-            if (!quitResp.empty()) {
-                std::cout << "  Server: " << quitResp;
-            }
+            sendCmd(ctrlSock, ctrlDest, "QUIT");
+            std::string r = readResp(ctrlSock);
+            if (!r.empty()) std::cout << "  Server: " << r;
             break;
         }
 
-        // -----------------------------------------------------------
-        // Xu ly lenh HELP noi bo: hien thi bang lenh ma khong gui Server
-        // -----------------------------------------------------------
+        // --- HELP noi bo ---
         if (cmd == "HELP" && arg.empty()) {
             ClientCLI::printHelp();
             continue;
         }
 
-        // -----------------------------------------------------------
-        // Ghep lenh day du: "CMD" hoac "CMD argument"
-        // -----------------------------------------------------------
-        std::string fullCmd = arg.empty() ? cmd : (cmd + " " + arg);
-
-        // -----------------------------------------------------------
-        // Gui lenh len Server qua TCP Control Channel
-        // -----------------------------------------------------------
-        if (!ftpClient.sendCommand(fullCmd)) {
-            std::cerr << "  [Loi] Gui lenh that bai. Ket noi co the da bi gian doan.\n";
+        // --- Gui lenh qua rdt_send_buffer ---
+        if (!sendCmd(ctrlSock, ctrlDest, cmd, arg)) {
+            std::cerr << "  [Loi] Gui lenh that bai.\n";
             break;
         }
-
-        // Luu lenh va tham so vua gui de xu ly phan hoi tuong ung
         lastCmd = cmd;
         lastArg = arg;
 
-        // -----------------------------------------------------------
-        // Doc phan hoi tu Server
-        // -----------------------------------------------------------
-        std::string response = ftpClient.readResponse();
+        // --- Doc phan hoi qua rdt_receive_buffer ---
+        std::string response = readResp(ctrlSock);
         if (response.empty()) {
-            // Khong nhan duoc phan hoi - Server co the da ngat ket noi
-            std::cerr << "  [Loi] Khong nhan duoc phan hoi tu Server.\n";
-            std::cerr << "        Ket noi co the da bi dong.\n";
+            std::cerr << "  [Loi] Khong nhan duoc phan hoi.\n";
             break;
         }
-
-        // In phan hoi thu tu Server
         std::cout << "  Server: " << response;
 
-        // Trich xuat ma phan hoi 3 chu so
         int code = ftpClient.getReplyCode(response);
-
-        // Goi may trang thai xu ly ma phan hoi
         handleReplyCode(code, response);
 
-        // -----------------------------------------------------------
-        // XU LY DAC BIET THEO MA PHAN HOI
-        // May trang thai (State Machine) chinh dieu phoi luong hoat dong
-        // -----------------------------------------------------------
         switch (code) {
 
-        // Ma 150: Server dang mo ket noi du lieu, san sang truyen file
-        // Day la noi tich hop voi module UDP RDT cua Thanh vien 3
+        // ===================================================================
+        // Ma 150: Server san sang -> bat dau truyen file qua Data Channel
+        // ===================================================================
         case 150: {
             if (dataChannelPort == 0) {
-                std::cerr << "  [Loi] Chua co Data Channel!\n";
-                std::cerr << "        Hay gui lenh PASV hoac PORT truoc RETR/STOR/LIST.\n";
+                std::cerr << "  [Loi] Chua co Data Channel! Gui PASV truoc.\n";
                 break;
             }
 
-            if (lastCmd == "RETR") {
-                // Tai file tu Server ve may (Download)
-                // Uu tien lay kich thuoc file truoc (neu da gui SIZE truoc do)
-                uint64_t fileSize = 0;
+            // Tao UDP Data socket (tach khoi Control socket)
+            SOCKET dataSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if (dataSock == INVALID_SOCKET) {
+                std::cerr << "  [Loi] Khong tao duoc Data socket: " << WSAGetLastError() << "\n";
+                dataChannelPort = 0;
+                break;
+            }
+            sockaddr_in localData;
+            ZeroMemory(&localData, sizeof(localData));
+            localData.sin_family      = AF_INET;
+            localData.sin_addr.s_addr = INADDR_ANY;
+            localData.sin_port        = 0;
+            if (bind(dataSock, (sockaddr*)&localData, sizeof(localData)) == SOCKET_ERROR) {
+                std::cerr << "  [Loi] Bind Data socket that bai.\n";
+                closesocket(dataSock);
+                dataChannelPort = 0;
+                break;
+            }
 
-                // Kiem tra file co the ghi duoc o dau ra khong
+            // -----------------------------------------------------------
+            // RETR: Nhan file tu Server
+            //
+            // Luong:
+            //   1. rdt_receive_file_stream -> nhan file nhi phan, ghi ra dia
+            //   2. calculate_file_hash(file) -> tinh MD5 cua file vua nhan
+            //   3. rdt_receive_buffer -> nhan chuoi MD5 Server gui den
+            //   4. So sanh hai chuoi: bao nguyen ven hoac canh bao bi hong
+            //   5. readResp(ctrlSock) -> nhan ma 226 tu Control Channel
+            // -----------------------------------------------------------
+            if (lastCmd == "RETR") {
+                // Kiem tra co the tao file dau ra khong
                 {
                     std::ofstream testOut(lastArg, std::ios::binary);
                     if (!testOut.is_open()) {
-                        std::cerr << "  [Loi] Khong tao duoc file dau ra: '"
-                                  << lastArg << "'\n";
-                        std::cerr << "        Kiem tra quyen ghi va duong dan.\n";
+                        std::cerr << "  [Loi] Khong tao duoc file: '" << lastArg << "'\n";
+                        closesocket(dataSock);
                         break;
                     }
                     testOut.close();
-                    // Xoa file rong vua tao de RDT tu ghi lai
                     std::remove(lastArg.c_str());
                 }
 
                 std::cout << "  [RDT] Bat dau nhan file: '" << lastArg << "'\n";
-                std::cout << "        Tu: " << dataChannelIP << ":" << dataChannelPort << "\n";
 
-                // Goi ham RDT nhan file (Thanh vien 3 implement)
-                // Ham nay doc theo che do nhi phan (std::ios::binary) de
-                // dam bao khong lam hong file anh, video, file nen, v.v.
-                bool recvOK = rdt_receive_file(lastArg, dataChannelIP,
-                                               dataChannelPort, fileSize);
+                // Buoc 1: Nhan file qua rdt
+                bool recvOK = rdt_receive_file_stream(dataSock, lastArg);
 
                 if (recvOK) {
-                    std::cout << "  [RDT] Nhan file thanh cong: " << lastArg << "\n";
+                    std::cout << "  [RDT] Nhan file hoan tat: " << lastArg << "\n";
 
-                    // Doc ma ket thuc truyen (Ma 226 - Transfer complete)
-                    // Server gui kem checksum trong phan hoi nay:
-                    // Vi du: "226 Transfer complete. Checksum: 123456"
-                    std::string doneResp = ftpClient.readResponse();
-                    if (!doneResp.empty()) {
-                        std::cout << "  Server: " << doneResp;
-                        handleReplyCode(ftpClient.getReplyCode(doneResp), doneResp);
+                    // Buoc 2: Bam file vua nhan bang MD5
+                    std::string localHash = calculate_file_hash(lastArg);
+                    if (localHash.empty()) {
+                        std::cerr << "  [Hash] Khong the tinh hash cua file vua nhan!\n";
+                    } else {
+                        std::cout << "  [Hash] MD5 local : " << localHash << "\n";
+                    }
 
-                        // Kiem tra toan ven bang Checksum
-                        // Server (transfer_handler.cpp) tinh checksum bang cong thuc:
-                        //   hash = (hash + byte) % 1000000007
-                        // Client dung cung cong thuc, so sanh hai gia tri
-                        long long serverChecksum = parseChecksumFrom226(doneResp);
-                        if (serverChecksum >= 0) {
-                            long long localChecksum = computeChecksum(lastArg);
-                            std::cout << "  [Checksum] Server: " << serverChecksum << "\n";
-                            std::cout << "  [Checksum] Local : " << localChecksum  << "\n";
-                            if (localChecksum == serverChecksum) {
-                                std::cout << "  [Checksum] KHOP! File nhan nguyen ven.\n";
-                            } else {
-                                std::cerr << "  [Checksum] KHONG KHOP! File co the bi loi!\n";
-                            }
+                    // Buoc 3: Nhan chuoi hash tu Server qua rdt_receive_buffer
+                    std::vector<char> hashData = rdt_receive_buffer(dataSock);
+                    std::string serverHash = parseResp(hashData);
+
+                    // Loai bo \r\n neu co
+                    while (!serverHash.empty() &&
+                           (serverHash.back() == '\r' || serverHash.back() == '\n'))
+                        serverHash.pop_back();
+
+                    if (serverHash.empty()) {
+                        std::cerr << "  [Hash] Khong nhan duoc hash tu Server!\n";
+                    } else {
+                        std::cout << "  [Hash] MD5 server: " << serverHash << "\n";
+                    }
+
+                    // Buoc 4: So sanh hai chuoi MD5
+                    if (!localHash.empty() && !serverHash.empty()) {
+                        if (localHash == serverHash) {
+                            std::cout << "  [Hash] KHOP! File nguyen ven, khong bi loi.\n";
+                        } else {
+                            std::cerr << "  [Hash] KHONG KHOP! File bi hu hong khi truyen!\n";
                         }
+                    }
+
+                    // Buoc 5: Doc ma 226 tu Control Channel
+                    std::string done = readResp(ctrlSock);
+                    if (!done.empty()) {
+                        std::cout << "  Server: " << done;
+                        handleReplyCode(ftpClient.getReplyCode(done), done);
                     }
                 } else {
                     std::cerr << "  [RDT] Nhan file that bai.\n";
                 }
-
-                // Reset data channel sau khi su dung xong
-                dataChannelPort = 0;
             }
+
+            // -----------------------------------------------------------
+            // STOR: Upload file len Server
+            //
+            // Luong:
+            //   1. calculate_file_hash(file) -> tinh MD5 truoc khi gui
+            //   2. rdt_send_file_stream -> gui file nhi phan
+            //   3. rdt_send_buffer -> gui chuoi MD5 de Server doi chieu
+            //   4. readResp(ctrlSock) -> nhan ma 226 tu Control Channel
+            // -----------------------------------------------------------
             else if (lastCmd == "STOR") {
-                // Upload file len Server
-                // Kiem tra file co ton tai o may Client khong
+                // Kiem tra file ton tai
                 uint64_t fileSize = 0;
                 {
-                    std::ifstream checkFile(lastArg, std::ios::binary | std::ios::ate);
-                    if (!checkFile.is_open()) {
+                    std::ifstream chk(lastArg, std::ios::binary | std::ios::ate);
+                    if (!chk.is_open()) {
                         std::cerr << "  [Loi] Khong mo duoc file: '" << lastArg << "'\n";
-                        std::cerr << "        Kiem tra file ton tai va co quyen doc.\n";
+                        closesocket(dataSock);
                         dataChannelPort = 0;
                         break;
                     }
-                    // Lay kich thuoc file de hien thi thong tin truoc khi gui
-                    fileSize = (uint64_t)checkFile.tellg();
-                    checkFile.close();
+                    fileSize = (uint64_t)chk.tellg();
                 }
 
-                std::cout << "  [RDT] Bat dau upload file: '" << lastArg << "'\n";
-                std::cout << "        Kich thuoc: " << fileSize << " bytes\n";
-                std::cout << "        Den: " << dataChannelIP << ":" << dataChannelPort << "\n";
+                // Buoc 1: Bam file truoc khi gui
+                std::string localHash = calculate_file_hash(lastArg);
+                if (localHash.empty()) {
+                    std::cerr << "  [Hash] Khong the tinh hash! Huy upload.\n";
+                    closesocket(dataSock);
+                    dataChannelPort = 0;
+                    break;
+                }
+                std::cout << "  [Hash] MD5 local : " << localHash << "\n";
 
-                // Goi ham RDT gui file (Thanh vien 3 implement)
-                // Ham phai doc file theo che do nhi phan (std::ios::binary)
-                bool sendOK = rdt_send_file(lastArg, dataChannelIP, dataChannelPort);
+                std::cout << "  [RDT] Upload: '" << lastArg << "' (" << fileSize << " bytes)\n";
+
+                // Buoc 2: Gui file qua rdt_send_file_stream
+                bool sendOK = rdt_send_file_stream(dataSock, dataDest, lastArg);
 
                 if (sendOK) {
-                    std::cout << "  [RDT] Upload hoan tat: " << lastArg << "\n";
+                    std::cout << "  [RDT] Gui file hoan tat.\n";
 
-                    // Doc ma ket thuc truyen tu Server (Ma 226)
-                    std::string doneResp = ftpClient.readResponse();
-                    if (!doneResp.empty()) {
-                        std::cout << "  Server: " << doneResp;
-                        handleReplyCode(ftpClient.getReplyCode(doneResp), doneResp);
+                    // Buoc 3: Gui chuoi MD5 de Server doi chieu voi file vua nhan
+                    // Them \r\n de Server de xu ly cu phap
+                    std::string hashMsg = localHash + "\r\n";
+                    std::vector<char> hashPayload(hashMsg.begin(), hashMsg.end());
+                    if (rdt_send_buffer(dataSock, dataDest, hashPayload)) {
+                        std::cout << "  [Hash] Da gui MD5 hash den Server.\n";
+                    } else {
+                        std::cerr << "  [Hash] Gui hash that bai!\n";
+                    }
+
+                    // Buoc 4: Doc ma 226 tu Control Channel
+                    std::string done = readResp(ctrlSock);
+                    if (!done.empty()) {
+                        std::cout << "  Server: " << done;
+                        handleReplyCode(ftpClient.getReplyCode(done), done);
                     }
                 } else {
                     std::cerr << "  [RDT] Upload that bai.\n";
                 }
-
-                dataChannelPort = 0;
             }
+
+            // -----------------------------------------------------------
+            // LIST / NLST: Nhan danh sach thu muc dang van ban
+            // -----------------------------------------------------------
             else if (lastCmd == "LIST" || lastCmd == "NLST") {
-                // Nhan danh sach thu muc qua UDP Data Channel
                 std::cout << "  [RDT] Dang nhan danh sach thu muc...\n";
 
-                // rdt_receive_listing: nhan chuoi van ban chua ket qua LIST
-                std::string listing = rdt_receive_listing(dataChannelIP, dataChannelPort);
+                std::vector<char> listData = rdt_receive_buffer(dataSock);
 
-                if (!listing.empty()) {
+                if (!listData.empty()) {
                     std::cout << "\n  --- Noi dung thu muc ---\n";
-                    std::cout << listing;
+                    std::cout << parseResp(listData);
                     std::cout << "  ------------------------\n\n";
                 }
 
-                // Doc ma 226 bao ket thuc truyen
-                std::string doneResp = ftpClient.readResponse();
-                if (!doneResp.empty()) {
-                    std::cout << "  Server: " << doneResp;
-                }
-
-                dataChannelPort = 0;
+                std::string done = readResp(ctrlSock);
+                if (!done.empty()) std::cout << "  Server: " << done;
             }
-            break;
-        }
 
-        // Ma 226: Truyen hoan tat (Transfer Complete)
-        // Neu khong bat duoc ma 150 truoc (Server truyen nhanh ngay),
-        // reset data channel de chuan bi cho luong tiep theo
-        case 226: {
-            std::cout << "  [Done] Truyen du lieu hoan tat thanh cong.\n";
+            closesocket(dataSock);
             dataChannelPort = 0;
             break;
         }
 
-        // Ma 227: Server tra loi PASV thanh cong, chua IP:Port cua Data Channel
-        case 227: {
-            std::string psvIP;
-            int         psvPort = 0;
-
-            if (ftpClient.parsePassiveResponse(response, psvIP, psvPort)) {
-                dataChannelIP   = psvIP;
-                dataChannelPort = psvPort;
-                std::cout << "  [PASV] Data Channel da thiet lap:\n";
-                std::cout << "         IP  : " << psvIP  << "\n";
-                std::cout << "         Port: " << psvPort << "\n";
-                std::cout << "  [PASV] San sang! Hay gui RETR <file>, STOR <file>, hoac LIST.\n";
-            }
+        // Ma 226: Truyen hoan tat
+        case 226: {
+            std::cout << "  [Done] Truyen du lieu hoan tat.\n";
+            dataChannelPort = 0;
             break;
         }
 
-        // Ma 200: Lenh PORT duoc chap nhan - Active Mode san sang
-        case 200: {
-            if (lastCmd == "PORT") {
-                std::cout << "  [PORT] Active Mode da duoc thiet lap.\n";
-                std::cout << "         Server se ket noi nguoc lai khi nhan RETR/STOR/LIST.\n";
+        // Ma 227: PASV OK - cap nhat dia chi Data Channel cua Server
+        case 227: {
+            std::string psvIP;
+            int         psvPort = 0;
+            if (ftpClient.parsePassiveResponse(response, psvIP, psvPort)) {
+                dataChannelPort = psvPort;
+
+                ZeroMemory(&dataDest, sizeof(dataDest));
+                dataDest.sin_family = AF_INET;
+                dataDest.sin_port   = htons((u_short)psvPort);
+                inet_pton(AF_INET, psvIP.c_str(), &dataDest.sin_addr);
+
+                std::cout << "  [PASV] Data Channel: " << psvIP << ":" << psvPort << "\n";
+                std::cout << "  [PASV] San sang! Gui RETR <file>, STOR <file>, hoac LIST.\n";
             }
             break;
         }
 
         // Ma 230: Dang nhap thanh cong
         case 230: {
-            std::cout << "  [Auth] Chao mung! Phien FTP da bat dau.\n";
+            std::cout << "  [Auth] Chao mung! Phien da bat dau.\n";
             ClientCLI::printStatus(serverIP, serverPort, true);
             break;
         }
 
-        // Ma 331: Server yeu cau mat khau sau ten dang nhap
-        case 331: {
-            // handleReplyCode() da in thong bao, khong can them o day
-            break;
-        }
-
-        // Mac dinh: Khong co xu ly dac biet them
         default:
             break;
         }
+    }
 
-    }  // Het vong lap CLI
-
-    // ---------------------------------------------------------------
-    // BUOC 6: Ngat ket noi va hien thi thong bao ket thuc
-    // ---------------------------------------------------------------
+    // BUOC 7: Don dep
     ftpClient.disconnect();
     ClientCLI::printStatus(serverIP, serverPort, false);
     std::cout << "  Phien FTP ket thuc. Tam biet!\n\n";
+    rdt_cleanup();
     return 0;
 }
