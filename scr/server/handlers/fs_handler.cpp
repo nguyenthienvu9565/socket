@@ -1,6 +1,6 @@
-#include "fs_handler.h"
-#include "reply_codes.h"
-#include "rdt_interface.h"
+#include "../../../include/server/handlers/fs_handler.h"
+#include "../../../include/server/reply_codes.h"
+#include "../../../include/server/rdt_interface.h"
 #include <filesystem>
 #include <optional>
 #include <algorithm>

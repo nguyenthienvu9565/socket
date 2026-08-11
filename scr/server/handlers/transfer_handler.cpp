@@ -1,11 +1,11 @@
-#include "transfer_handler.h"
-#include "reply_codes.h"
+#include "../../../include/server/handlers/transfer_handler.h"
+#include "../../../include/server/reply_codes.h"
 #include <filesystem>
 #include <fstream>
 #include <vector>
 #include <optional>
 #include <winsock2.h> 
-#include "../../include/core/crypto_hash.h"
+#include "../../../include/core/crypto_hash.h"
 
 namespace fs = std::filesystem;
 

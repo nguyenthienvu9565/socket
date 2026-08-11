@@ -1,9 +1,9 @@
-#include "command_dispatcher.h"
-#include "reply_codes.h"
-#include "handlers/auth_handler.h"
-#include "handlers/fs_handler.h"
-#include "handlers/transfer_handler.h" 
-#include "real_rdt.h"                  
+#include "../../include/server/command_dispatcher.h"
+#include "../../include/server/reply_codes.h"
+#include "../../include/server/handlers/auth_handler.h"
+#include "../../include/server/handlers/fs_handler.h"
+#include "../../include/server/handlers/transfer_handler.h" 
+#include "../../include/server/real_rdt.h"                  
 #include <algorithm>
 #include <utility>
 #include <vector>

@@ -1,5 +1,5 @@
-#include "auth_handler.h"
-#include "reply_codes.h"
+#include "../../../include/server/handlers/auth_handler.h"
+#include "../../../include/server/reply_codes.h"
 #include <unordered_map>
 
 namespace ftp {

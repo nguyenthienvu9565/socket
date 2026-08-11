@@ -8,10 +8,10 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#include "session.h"
-#include "command_dispatcher.h"
-#include "reply_codes.h"
-#include "../include/core/rdt.h" 
+#include "../../include/server/session.h"
+#include "../../include/server/command_dispatcher.h"
+#include "../../include/server/reply_codes.h"
+#include "../../include/core/rdt.h" 
 
 namespace {
 
