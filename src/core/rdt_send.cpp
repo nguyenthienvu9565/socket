@@ -4,6 +4,7 @@
 #include <fstream>
 #include <vector>
 #include <deque>
+#include <cstring>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -80,8 +81,37 @@ bool rdt_send_buffer(SOCKET sock, const sockaddr_in& dest_addr, const std::vecto
     memset(&fin_pkt, 0, sizeof(fin_pkt));
     fin_pkt.seq_num = htonl(next_seq_num);
     fin_pkt.flags = htons(FLAG_FIN);
+    fin_pkt.checksum = 0;
     fin_pkt.checksum = calculate_checksum(&fin_pkt);
-    sendto(sock, reinterpret_cast<const char*>(&fin_pkt), sizeof(RDTPacket), 0, (struct sockaddr*)&dest_addr, dest_len);
+
+    bool fin_acked = false;
+    for (int retry = 0; retry < 5 && !fin_acked; retry++) {
+        sendto(sock, reinterpret_cast<const char*>(&fin_pkt), sizeof(RDTPacket), 0, (struct sockaddr*)&dest_addr, dest_len);
+        
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(sock, &read_fds);
+
+        timeval timeout;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 300000; // Đợi ACK trong 300ms, nếu không có sẽ gửi lại FIN
+
+        if (select(0, &read_fds, NULL, NULL, &timeout) > 0) {
+            RDTPacket ack_pkt;
+            sockaddr_in from_addr;
+            int from_len = sizeof(from_addr);
+            
+            if (recvfrom(sock, reinterpret_cast<char*>(&ack_pkt), sizeof(RDTPacket), 0, (struct sockaddr*)&from_addr, &from_len) > 0) {
+                uint16_t rec_chk = ack_pkt.checksum;
+                ack_pkt.checksum = 0;
+                if (calculate_checksum(&ack_pkt) == rec_chk && ntohs(ack_pkt.flags) == FLAG_ACK) {
+                    if (ntohl(ack_pkt.ack_num) == next_seq_num) {
+                        fin_acked = true;
+                    }
+                }
+            }
+        }
+    }
 
     return true;
 }
@@ -160,8 +190,37 @@ bool rdt_send_file_stream(SOCKET sock, const sockaddr_in& dest_addr, const std::
     memset(&fin_pkt, 0, sizeof(fin_pkt));
     fin_pkt.seq_num = htonl(next_seq);
     fin_pkt.flags = htons(FLAG_FIN);
+    fin_pkt.checksum = 0;
     fin_pkt.checksum = calculate_checksum(&fin_pkt);
-    sendto(sock, reinterpret_cast<const char*>(&fin_pkt), sizeof(RDTPacket), 0, (struct sockaddr*)&dest_addr, dest_len);
+
+    bool fin_acked = false;
+    for (int retry = 0; retry < 5 && !fin_acked; retry++) {
+        sendto(sock, reinterpret_cast<const char*>(&fin_pkt), sizeof(RDTPacket), 0, (struct sockaddr*)&dest_addr, dest_len);
+        
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(sock, &read_fds);
+
+        timeval timeout;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 300000; // Đợi ACK trong 300ms
+
+        if (select(0, &read_fds, NULL, NULL, &timeout) > 0) {
+            RDTPacket ack_pkt;
+            sockaddr_in from_addr;
+            int from_len = sizeof(from_addr);
+            
+            if (recvfrom(sock, reinterpret_cast<char*>(&ack_pkt), sizeof(RDTPacket), 0, (struct sockaddr*)&from_addr, &from_len) > 0) {
+                uint16_t rec_chk = ack_pkt.checksum;
+                ack_pkt.checksum = 0;
+                if (calculate_checksum(&ack_pkt) == rec_chk && ntohs(ack_pkt.flags) == FLAG_ACK) {
+                    if (ntohl(ack_pkt.ack_num) == next_seq) {
+                        fin_acked = true;
+                    }
+                }
+            }
+        }
+    }
 
     std::cout << "Trang thai: Truyen file hoan tat!\n";
     return true;

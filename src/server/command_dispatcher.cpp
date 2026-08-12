@@ -3,7 +3,8 @@
 #include "../../include/server/handlers/auth_handler.h"
 #include "../../include/server/handlers/fs_handler.h"
 #include "../../include/server/handlers/transfer_handler.h" 
-#include "../../include/server/real_rdt.h"                  
+#include "../../include/server/real_rdt.h"   
+#include "../../include/core/rdt.h"                  
 #include <algorithm>
 #include <utility>
 #include <vector>
@@ -60,7 +61,6 @@ std::string handleCommand(const std::string& line, Session& session) {
     if (verb == "CDUP") return handleCDUP(session);
     if (verb == "MKD")  return handleMKD(args, session);
     if (verb == "RMD")  return handleRMD(args, session);
-    if (verb == "NLST") return handleNLST(args, session);
     if (verb == "SIZE") return handleSIZE(args, session);
     if (verb == "MDTM") return handleMDTM(args, session);
 
@@ -96,18 +96,31 @@ std::string handleCommand(const std::string& line, Session& session) {
             "Entering Passive Mode (127,0,0,1," + std::to_string(p1) + "," + std::to_string(p2) + ")");
     }
 
-    if (verb == "LIST" || verb == "RETR" || verb == "STOR") {
+    if (verb == "LIST" || verb == "NLST" || verb == "RETR" || verb == "STOR") {
         if (session.passiveMode) {
             if (!session.dataChannel) {
                 return formatReply(CANT_OPEN_DATA_CONN, "Use PASV first");
             }
-            if (!session.dataChannel->waitForPeer()) {
-                return formatReply(CANT_OPEN_DATA_CONN, "Client did not connect to data port");
-            }
-        } else {
+        } else { // Active Mode
             if (session.dataPeerHost.empty() || session.dataPeerPort <= 0) {
                 return formatReply(CANT_OPEN_DATA_CONN, "Use PORT or PASV first");
             }
+        }
+
+        std::string startReply = formatReply(FILE_STATUS_OK, "Opening data connection");
+        std::vector<char> startPayload(startReply.begin(), startReply.end());
+        rdt_send_buffer(session.socketFd, session.clientControlAddr, startPayload);
+
+        // 2. SAU ĐÓ SERVER MỚI CHỜ KẾT NỐI DATA CHANNEL TỪ CLIENT
+        if (session.passiveMode) {
+            // Có thể bọc thêm cơ chế timeout như tôi đã hướng dẫn trước đó
+            if (!session.dataChannel->waitForPeer()) {
+                session.dataChannel->close();
+                session.dataChannel.reset();
+                session.passiveMode = false;
+                return formatReply(CANT_OPEN_DATA_CONN, "Client connection timeout on data port");
+            }
+        } else {
             session.dataChannel = std::make_unique<RealRDTChannel>();
             if (!session.dataChannel->open(session.dataPeerHost, session.dataPeerPort)) {
                 session.dataChannel.reset();
@@ -117,8 +130,16 @@ std::string handleCommand(const std::string& line, Session& session) {
 
         std::string reply;
         if (verb == "LIST") reply = handleLIST(args, session, *session.dataChannel);
+        else if (verb == "NLST") reply = handleNLST(args, session, *session.dataChannel);
         else if (verb == "RETR") reply = handleRETR(args, session, *session.dataChannel);
-        else if (verb == "STOR") reply = handleSTOR(args, session, *session.dataChannel);
+        else if (verb == "STOR") {
+            if (!session.passiveMode) {
+                // [Reverse Ping] Gửi 1 byte mồi cho Client để lộ tọa độ Data Port
+                std::vector<char> ping = {'P'};
+                session.dataChannel->sendBuffer(ping); 
+            }
+            reply = handleSTOR(args, session, *session.dataChannel);
+        }
 
         session.dataChannel->close();
         session.dataChannel.reset();

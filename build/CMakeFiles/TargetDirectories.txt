@@ -1,0 +1,4 @@
+C:/Users/Admin/Coding/C++/mmt/socket/build/CMakeFiles/client.dir
+C:/Users/Admin/Coding/C++/mmt/socket/build/CMakeFiles/server.dir
+C:/Users/Admin/Coding/C++/mmt/socket/build/CMakeFiles/edit_cache.dir
+C:/Users/Admin/Coding/C++/mmt/socket/build/CMakeFiles/rebuild_cache.dir

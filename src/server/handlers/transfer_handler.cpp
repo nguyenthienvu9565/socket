@@ -1,4 +1,5 @@
 #include "../../../include/server/handlers/transfer_handler.h"
+#include "../../../include/server/handlers/fs_handler.h"
 #include "../../../include/server/reply_codes.h"
 #include "../../../include/core/crypto_hash.h"
 #include "../../../include/core/rdt.h" 
@@ -24,13 +25,6 @@ std::optional<fs::path> resolveSafePath(const std::string& requested, const Sess
     return canonicalCandidate;
 }
 
-// Hàm hỗ trợ: Lấy địa chỉ của Client từ UDP socket đã connect
-sockaddr_in getPeerAddress(SOCKET sock) {
-    sockaddr_in peerAddr{};
-    int peerLen = sizeof(peerAddr);
-    getpeername(sock, reinterpret_cast<sockaddr*>(&peerAddr), &peerLen);
-    return peerAddr;
-}
 } // namespace
 
 std::string handleRETR(const std::string& args, Session& session, IRDTChannel& rdt) {
@@ -39,24 +33,27 @@ std::string handleRETR(const std::string& args, Session& session, IRDTChannel& r
     auto resolved = resolveSafePath(args, session);
     if (!resolved || !fs::is_regular_file(*resolved)) return formatReply(FILE_UNAVAILABLE, "File not found");
 
-    // Gửi mã 150 qua RDT
-    std::string startReply = formatReply(FILE_STATUS_OK, "Opening data connection");
-    std::vector<char> startPayload(startReply.begin(), startReply.end());
-    rdt_send_buffer(session.socketFd, getPeerAddress(session.socketFd), startPayload);
-
     // Gửi file qua Data Channel
     if (!rdt.sendFile(resolved->string())) {
         return formatReply(CONN_CLOSED_TRANSFER_ABORTED, "Data connection lost");
     }
 
     // Tính MD5 và gửi nguyên chuỗi hash qua Data Channel
-    std::string hash = calculate_file_hash(resolved->string());
-    std::string hashMsg = hash + "\r\n";
-    std::vector<char> hashPayload(hashMsg.begin(), hashMsg.end());
-    rdt.sendBuffer(hashPayload);
+    std::string serverHash = calculate_file_hash(resolved->generic_string());
+    if (serverHash.empty()) {
+        serverHash = "HASH_ERROR"; // Tránh gửi chuỗi rỗng làm kẹt RDT
+    }
+    
+    // Thêm \r\n để Client parseResp() dễ dàng xử lý
+    serverHash += "\r\n"; 
+    std::vector<char> hashPayload(serverHash.begin(), serverHash.end());
+    
+    // Gửi chuỗi Hash qua Data Channel
+    rdt.sendBuffer(hashPayload); 
+    // ==========================================================
 
-    // Trả về mã 226
-    return formatReply(TRANSFER_COMPLETE, "Transfer complete. MD5 sent over Data Channel.");
+    // 3. Trả về mã 226 báo hiệu hoàn tất
+    return formatReply(TRANSFER_COMPLETE, "File send OK.");
 }
 
 std::string handleSTOR(const std::string& args, Session& session, IRDTChannel& rdt) {
@@ -64,11 +61,6 @@ std::string handleSTOR(const std::string& args, Session& session, IRDTChannel& r
     
     auto resolved = resolveSafePath(args, session);
     if (!resolved) return formatReply(FILE_UNAVAILABLE, "Invalid path");
-
-    // Gửi mã 150 qua RDT
-    std::string startReply = formatReply(FILE_STATUS_OK, "Ok to send data.");
-    std::vector<char> startPayload(startReply.begin(), startReply.end());
-    rdt_send_buffer(session.socketFd, getPeerAddress(session.socketFd), startPayload);
 
     // Nhận file qua Data Channel
     if (!rdt.receiveFile(resolved->string())) {

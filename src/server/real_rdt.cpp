@@ -23,7 +23,8 @@ bool RealRDTChannel::open(const std::string& peerHost, int peerPort) {
 
     peerAddr_.sin_family = AF_INET;
     peerAddr_.sin_port = htons(static_cast<uint16_t>(peerPort));
-    if (inet_pton(AF_INET, peerHost.c_str(), &peerAddr_.sin_addr) <= 0) {
+    peerAddr_.sin_addr.s_addr = inet_addr(peerHost.c_str());
+    if (peerAddr_.sin_addr.s_addr == INADDR_NONE) {
         return false;
     }
     peerConnected_ = true;
@@ -59,7 +60,7 @@ bool RealRDTChannel::waitForPeer() {
 
     char probe[1];
     int peerLen = sizeof(peerAddr_);
-    int peeked = ::recvfrom(sock_, probe, sizeof(probe), MSG_PEEK,
+    int peeked = ::recvfrom(sock_, probe, sizeof(probe), 0,
                                  reinterpret_cast<sockaddr*>(&peerAddr_), &peerLen);
     if (peeked == SOCKET_ERROR) return false;
 
@@ -84,7 +85,7 @@ void RealRDTChannel::close() {
 }
 
 bool RealRDTChannel::sendFile(const std::string& localPath) {
-    if (!peerConnected_) return false;
+    if (!peerConnected_ && !waitForPeer()) return false;
     return rdt_send_file_stream(sock_, peerAddr_, localPath);
 }
 
@@ -94,7 +95,7 @@ bool RealRDTChannel::receiveFile(const std::string& savePath) {
 }
 
 bool RealRDTChannel::sendBuffer(const std::vector<char>& data) {
-    if (!peerConnected_) return false;
+    if (!peerConnected_ && !waitForPeer()) return false;
     return rdt_send_buffer(sock_, peerAddr_, data);
 }
 

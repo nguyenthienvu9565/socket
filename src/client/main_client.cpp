@@ -23,6 +23,8 @@
 #include <string>
 #include <fstream>
 #include <cstdint>
+#include <cstring>
+#include <filesystem>
 
 #include "../../include/client/client_ftp.h"
 #include "../../include/client/client_cli.h"
@@ -123,6 +125,9 @@ int main() {
     std::cout << "  |      Phien ban: 5.0 | Kiem tra toan ven bang MD5 Hash       |\n";
     std::cout << "  +==============================================================+\n\n";
 
+    std::filesystem::create_directories("client_data");
+    std::cout << "  [System] Thu muc lam viec cua Client: ./client_data\n\n";
+
     // BUOC 2: Nhap IP / Port Server
     std::string serverIP;
     int         serverPort = 2121;
@@ -162,11 +167,25 @@ int main() {
     SOCKET      ctrlSock = ftpClient.getSocket();
     sockaddr_in ctrlDest = ftpClient.getServerAddr();
 
-    // BUOC 5: Doc thong diep chao (Ma 220) qua rdt_receive_buffer
-    std::string welcomeMsg = readResp(ctrlSock);
+    // =========================================================================
+    // BUOC 5: GUI GOI TIN KICH HOAT SERVER (Bắt buộc cho UDP)
+    // =========================================================================
+    const char* initPing = "INIT\r\n";
+    // Dùng trực tiếp send() vì UDP socket đã được connect() trong connectServer
+    int sendRes = send(ctrlSock, initPing, (int)strlen(initPing), 0);
+    if (sendRes == SOCKET_ERROR) {
+        // Fallback sang sendto nếu send bị từ chối
+        sendto(ctrlSock, initPing, (int)strlen(initPing), 0, (sockaddr*)&ctrlDest, sizeof(ctrlDest));
+    }
+    std::cout << "  [UDP] Da gui goi tin KICH HOAT Server (" << strlen(initPing) << " bytes)...\n";
+
+    // Doc thong diep chao (Ma 220) qua rdt_receive_buffer
+    std::vector<char> welcomeData = rdt_receive_buffer(ctrlSock, &ctrlDest);
+    std::string welcomeMsg = parseResp(welcomeData);
     if (!welcomeMsg.empty()) {
         std::cout << "  Server: " << welcomeMsg;
         handleReplyCode(ftpClient.getReplyCode(welcomeMsg), welcomeMsg);
+        std::cout << "  [System] Da chuyen Control Channel sang Port moi: " << ntohs(ctrlDest.sin_port) << "\n";
     }
     ClientCLI::printHelp();
 
@@ -174,6 +193,9 @@ int main() {
     int         dataChannelPort = 0;
     sockaddr_in dataDest;
     ZeroMemory(&dataDest, sizeof(dataDest));
+
+    bool isPassive = true; 
+    SOCKET activeDataSock = INVALID_SOCKET;
 
     std::string lastCmd;
     std::string lastArg;
@@ -206,6 +228,55 @@ int main() {
             continue;
         }
 
+        // --- THÊM KHỐI XỬ LÝ PORT TỰ ĐỘNG NÀY ---
+        if (cmd == "PORT") {
+            if (arg.empty()) {
+                std::cerr << "  [Loi] Lenh PORT can tham so. Vi du: PORT 192,168,1,5,195,149\n";
+                continue;
+            }
+
+            int h1, h2, h3, h4, p1, p2;
+            // Dùng sscanf để tách 6 số nguyên phân cách bằng dấu phẩy
+            if (sscanf(arg.c_str(), "%d,%d,%d,%d,%d,%d", &h1, &h2, &h3, &h4, &p1, &p2) != 6) {
+                std::cerr << "  [Loi] Sai cu phap PORT. Yeu cau: h1,h2,h3,h4,p1,p2\n";
+                continue;
+            }
+
+            // Tính toán số Port từ 2 tham số p1, p2
+            int port = (p1 * 256) + p2;
+            std::string ip = std::to_string(h1) + "." + std::to_string(h2) + "." + std::to_string(h3) + "." + std::to_string(h4);
+
+            if (activeDataSock != INVALID_SOCKET) {
+                closesocket(activeDataSock);
+            }
+            
+            activeDataSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if (activeDataSock == INVALID_SOCKET) {
+                std::cerr << "  [Loi] Khong the tao Data Socket.\n";
+                continue;
+            }
+
+            sockaddr_in localAddr;
+            ZeroMemory(&localAddr, sizeof(localAddr));
+            localAddr.sin_family = AF_INET;
+            
+            // INADDR_ANY giúp Client lắng nghe trên tất cả các card mạng (bao gồm cả LAN và Wi-Fi)
+            localAddr.sin_addr.s_addr = INADDR_ANY; 
+            localAddr.sin_port = htons(port);
+            
+            // Bind (ràng buộc) socket vào đúng cái Port mà người dùng vừa nhập
+            if (bind(activeDataSock, (sockaddr*)&localAddr, sizeof(localAddr)) == SOCKET_ERROR) {
+                std::cerr << "  [Loi] Khong the bind vao port " << port << ". Vui long chon port khac (VD: p1 > 10).\n";
+                closesocket(activeDataSock);
+                activeDataSock = INVALID_SOCKET;
+                continue;
+            }
+            
+            isPassive = false; 
+            dataChannelPort = port;
+            std::cout << "  [Active] Client da mo Data Socket, lang nghe tai IP: " << ip << ", Port: " << port << "\n";
+        }
+
         // --- Gui lenh qua rdt_send_buffer ---
         if (!sendCmd(ctrlSock, ctrlDest, cmd, arg)) {
             std::cerr << "  [Loi] Gui lenh that bai.\n";
@@ -220,7 +291,7 @@ int main() {
             std::cerr << "  [Loi] Khong nhan duoc phan hoi.\n";
             break;
         }
-        std::cout << "  Server: " << response;
+        std::cout << "  Server: " << response<< std::flush;
 
         int code = ftpClient.getReplyCode(response);
         handleReplyCode(code, response);
@@ -231,63 +302,69 @@ int main() {
         // Ma 150: Server san sang -> bat dau truyen file qua Data Channel
         // ===================================================================
         case 150: {
-            if (dataChannelPort == 0) {
-                std::cerr << "  [Loi] Chua co Data Channel! Gui PASV truoc.\n";
+            if (dataChannelPort == 0 && isPassive) {
+                std::cerr << "  [Loi] Chua co Data Channel! Gui PASV hoac PORT truoc.\n";
                 break;
             }
 
-            // Tao UDP Data socket (tach khoi Control socket)
-            SOCKET dataSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-            if (dataSock == INVALID_SOCKET) {
-                std::cerr << "  [Loi] Khong tao duoc Data socket: " << WSAGetLastError() << "\n";
-                dataChannelPort = 0;
-                break;
-            }
-            sockaddr_in localData;
-            ZeroMemory(&localData, sizeof(localData));
-            localData.sin_family      = AF_INET;
-            localData.sin_addr.s_addr = INADDR_ANY;
-            localData.sin_port        = 0;
-            if (bind(dataSock, (sockaddr*)&localData, sizeof(localData)) == SOCKET_ERROR) {
-                std::cerr << "  [Loi] Bind Data socket that bai.\n";
-                closesocket(dataSock);
-                dataChannelPort = 0;
-                break;
+            SOCKET dataSock = INVALID_SOCKET;
+
+            if (isPassive) {
+                // PASSIVE MODE: Tạo mới socket và Bind vào port 0
+                dataSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+                if (dataSock == INVALID_SOCKET) {
+                    std::cerr << "  [Loi] Khong tao duoc Data socket.\n";
+                    dataChannelPort = 0;
+                    break;
+                }
+
+                sockaddr_in localData;
+                ZeroMemory(&localData, sizeof(localData));
+                localData.sin_family = AF_INET;
+                localData.sin_addr.s_addr = INADDR_ANY;
+                localData.sin_port = 0;
+                
+                if (bind(dataSock, (sockaddr*)&localData, sizeof(localData)) == SOCKET_ERROR) {
+                    std::cerr << "  [Loi] Bind Data socket that bai.\n";
+                    closesocket(dataSock);
+                    dataChannelPort = 0;
+                    break;
+                }
+
+                // Gửi tín hiệu kích hoạt cho Server
+                char readyByte = '1';
+                sendto(dataSock, &readyByte, 1, 0, (sockaddr*)&dataDest, sizeof(dataDest));
+            } else {
+                // ACTIVE MODE: Tái sử dụng socket đã mở lúc gõ lệnh PORT
+                dataSock = activeDataSock;
+                std::cout << "  [Active] Cho Server ket noi va truyen du lieu...\n";
             }
 
-            // -----------------------------------------------------------
-            // RETR: Nhan file tu Server
-            //
-            // Luong:
-            //   1. rdt_receive_file_stream -> nhan file nhi phan, ghi ra dia
-            //   2. calculate_file_hash(file) -> tinh MD5 cua file vua nhan
-            //   3. rdt_receive_buffer -> nhan chuoi MD5 Server gui den
-            //   4. So sanh hai chuoi: bao nguyen ven hoac canh bao bi hong
-            //   5. readResp(ctrlSock) -> nhan ma 226 tu Control Channel
-            // -----------------------------------------------------------
+            std::string localFilePath = "client_data/" + lastArg;
+
             if (lastCmd == "RETR") {
                 // Kiem tra co the tao file dau ra khong
                 {
-                    std::ofstream testOut(lastArg, std::ios::binary);
+                    std::ofstream testOut(localFilePath, std::ios::binary); // <-- Dùng localFilePath
                     if (!testOut.is_open()) {
-                        std::cerr << "  [Loi] Khong tao duoc file: '" << lastArg << "'\n";
+                        std::cerr << "  [Loi] Khong tao duoc file: '" << localFilePath << "'\n";
                         closesocket(dataSock);
                         break;
                     }
                     testOut.close();
-                    std::remove(lastArg.c_str());
+                    std::remove(localFilePath.c_str());
                 }
 
-                std::cout << "  [RDT] Bat dau nhan file: '" << lastArg << "'\n";
+                std::cout << "  [RDT] Bat dau nhan file: '" << localFilePath << "'\n";
 
-                // Buoc 1: Nhan file qua rdt
-                bool recvOK = rdt_receive_file_stream(dataSock, lastArg);
+                // Buoc 1: Nhan file qua rdt (lưu vào client_data/)
+                bool recvOK = rdt_receive_file_stream(dataSock, localFilePath); // <-- Dùng localFilePath
 
                 if (recvOK) {
-                    std::cout << "  [RDT] Nhan file hoan tat: " << lastArg << "\n";
+                    std::cout << "  [RDT] Nhan file hoan tat: " << localFilePath << "\n";
 
                     // Buoc 2: Bam file vua nhan bang MD5
-                    std::string localHash = calculate_file_hash(lastArg);
+                    std::string localHash = calculate_file_hash(localFilePath);
                     if (localHash.empty()) {
                         std::cerr << "  [Hash] Khong the tinh hash cua file vua nhan!\n";
                     } else {
@@ -339,12 +416,26 @@ int main() {
             //   4. readResp(ctrlSock) -> nhan ma 226 tu Control Channel
             // -----------------------------------------------------------
             else if (lastCmd == "STOR") {
-                // Kiem tra file ton tai
+                if (!isPassive) {
+                    std::cout << "  [Active] Dang cho Server ping de xac dinh huong di...\n";
+                    
+                    // Sử dụng rdt_receive_buffer và truyền dataDest vào để hàm tự cập nhật IP/Port của Server
+                    std::vector<char> pingMsg = rdt_receive_buffer(dataSock, &dataDest); 
+                    
+                    if (pingMsg.empty()) {
+                        std::cerr << "  [Loi] Khong nhan duoc Ping tu Server. Huy Upload.\n";
+                        closesocket(dataSock);
+                        dataChannelPort = 0;
+                        break;
+                    }
+                    std::cout << "  [Active] Da khoa muc tieu Server Data Port: " << ntohs(dataDest.sin_port) << "\n";
+                }
+                // Kiem tra file ton tai trong client_data/
                 uint64_t fileSize = 0;
                 {
-                    std::ifstream chk(lastArg, std::ios::binary | std::ios::ate);
+                    std::ifstream chk(localFilePath, std::ios::binary | std::ios::ate); // <-- Dùng localFilePath
                     if (!chk.is_open()) {
-                        std::cerr << "  [Loi] Khong mo duoc file: '" << lastArg << "'\n";
+                        std::cerr << "  [Loi] Khong mo duoc file: '" << localFilePath << "' (Hay de file vao folder client_data!)\n";
                         closesocket(dataSock);
                         dataChannelPort = 0;
                         break;
@@ -353,7 +444,7 @@ int main() {
                 }
 
                 // Buoc 1: Bam file truoc khi gui
-                std::string localHash = calculate_file_hash(lastArg);
+                std::string localHash = calculate_file_hash(localFilePath); // <-- Dùng localFilePath
                 if (localHash.empty()) {
                     std::cerr << "  [Hash] Khong the tinh hash! Huy upload.\n";
                     closesocket(dataSock);
@@ -362,13 +453,15 @@ int main() {
                 }
                 std::cout << "  [Hash] MD5 local : " << localHash << "\n";
 
-                std::cout << "  [RDT] Upload: '" << lastArg << "' (" << fileSize << " bytes)\n";
+                std::cout << "  [RDT] Upload: '" << localFilePath << "' (" << fileSize << " bytes)\n";
 
                 // Buoc 2: Gui file qua rdt_send_file_stream
-                bool sendOK = rdt_send_file_stream(dataSock, dataDest, lastArg);
+                bool sendOK = rdt_send_file_stream(dataSock, dataDest, localFilePath); // <-- Dùng localFilePath
 
                 if (sendOK) {
                     std::cout << "  [RDT] Gui file hoan tat.\n";
+
+                    Sleep(100);
 
                     // Buoc 3: Gui chuoi MD5 de Server doi chieu voi file vua nhan
                     // Them \r\n de Server de xu ly cu phap
@@ -409,7 +502,12 @@ int main() {
                 if (!done.empty()) std::cout << "  Server: " << done;
             }
 
-            closesocket(dataSock);
+            if (isPassive) {
+                closesocket(dataSock);
+            } else {
+                closesocket(activeDataSock);
+                activeDataSock = INVALID_SOCKET;
+            }
             dataChannelPort = 0;
             break;
         }
@@ -423,6 +521,12 @@ int main() {
 
         // Ma 227: PASV OK - cap nhat dia chi Data Channel cua Server
         case 227: {
+            isPassive = true; // --- THÊM DÒNG NÀY ---
+            if (activeDataSock != INVALID_SOCKET) { // --- THÊM ĐOẠN NÀY ---
+                closesocket(activeDataSock);
+                activeDataSock = INVALID_SOCKET;
+            }
+
             std::string psvIP;
             int         psvPort = 0;
             if (ftpClient.parsePassiveResponse(response, psvIP, psvPort)) {
@@ -431,7 +535,7 @@ int main() {
                 ZeroMemory(&dataDest, sizeof(dataDest));
                 dataDest.sin_family = AF_INET;
                 dataDest.sin_port   = htons((u_short)psvPort);
-                inet_pton(AF_INET, psvIP.c_str(), &dataDest.sin_addr);
+                dataDest.sin_addr.s_addr = inet_addr(psvIP.c_str());
 
                 std::cout << "  [PASV] Data Channel: " << psvIP << ":" << psvPort << "\n";
                 std::cout << "  [PASV] San sang! Gui RETR <file>, STOR <file>, hoac LIST.\n";

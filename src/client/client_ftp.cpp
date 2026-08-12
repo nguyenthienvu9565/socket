@@ -61,8 +61,8 @@ bool ClientFTP::connectServer(const std::string& ip, int port) {
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port   = htons((u_short)port);
 
-    int conv = inet_pton(AF_INET, ip.c_str(), &serverAddr.sin_addr);
-    if (conv != 1) {
+    serverAddr.sin_addr.s_addr = inet_addr(ip.c_str());
+    if (serverAddr.sin_addr.s_addr == INADDR_NONE) {
         std::cerr << "[UDP Error] Dia chi IP khong hop le: '" << ip << "'\n";
         closesocket(controlSocket);
         controlSocket = INVALID_SOCKET;

@@ -16,7 +16,7 @@ void rdt_cleanup();
 // Hàm send và receive sẽ nhận vào và trả ra một vector 
 
 bool rdt_send_buffer(SOCKET sock, const sockaddr_in& dest_addr, const std::vector<char>& data_buffer, int window_size = 4, int timeout_ms = 500);
-std::vector<char> rdt_receive_buffer(SOCKET sock);
+std::vector<char> rdt_receive_buffer(SOCKET sock, sockaddr_in* out_addr = nullptr);
 
 
 // =====================================================================================

@@ -3,8 +3,9 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <cstring>
 
-std::vector<char> rdt_receive_buffer(SOCKET sock) {
+std::vector<char> rdt_receive_buffer(SOCKET sock, sockaddr_in* out_addr) {
     std::vector<char> received_data;
     uint32_t expected_seq = 0;
     
@@ -16,7 +17,12 @@ std::vector<char> rdt_receive_buffer(SOCKET sock) {
         int bytes_recv = recvfrom(sock, reinterpret_cast<char*>(&pkt), sizeof(RDTPacket), 0, (struct sockaddr*)&client_addr, &client_len);
         
         if (bytes_recv <= 0) continue;
-        if (calculate_checksum(&pkt) != pkt.checksum) continue; 
+
+        uint16_t received_checksum = pkt.checksum;
+        pkt.checksum = 0; // Đặt về 0 trước khi tính lại checksum gốc
+        if (calculate_checksum(&pkt) != received_checksum) {
+            continue; // Nếu gói tin bị lỗi thật sự thì mới bỏ qua
+        }
 
         uint32_t seq_num = ntohl(pkt.seq_num);
         uint16_t flags = ntohs(pkt.flags);
@@ -50,6 +56,10 @@ std::vector<char> rdt_receive_buffer(SOCKET sock) {
         sendto(sock, reinterpret_cast<const char*>(&ack_pkt), sizeof(RDTPacket), 0, (struct sockaddr*)&client_addr, client_len);
     }
 
+    if (out_addr != nullptr) {
+        *out_addr = client_addr;
+    }
+
     return received_data;
 }
 
@@ -71,7 +81,12 @@ bool rdt_receive_file_stream(SOCKET sock, const std::string& save_filepath) {
         int bytes_recv = recvfrom(sock, reinterpret_cast<char*>(&pkt), sizeof(RDTPacket), 0, (struct sockaddr*)&client_addr, &client_len);
         
         if (bytes_recv <= 0) continue;
-        if (calculate_checksum(&pkt) != pkt.checksum) continue;
+
+        uint16_t received_checksum = pkt.checksum;
+        pkt.checksum = 0; // Đặt về 0 trước khi tính lại checksum gốc
+        if (calculate_checksum(&pkt) != received_checksum) {
+            continue;
+        }
 
         uint32_t seq_num = ntohl(pkt.seq_num);
         uint16_t flags = ntohs(pkt.flags);
@@ -83,7 +98,9 @@ bool rdt_receive_file_stream(SOCKET sock, const std::string& save_filepath) {
             fin_ack.flags = htons(FLAG_ACK);
             fin_ack.ack_num = htonl(seq_num);
             fin_ack.checksum = calculate_checksum(&fin_ack);
-            sendto(sock, reinterpret_cast<const char*>(&fin_ack), sizeof(RDTPacket), 0, (struct sockaddr*)&client_addr, client_len);
+            for (int i = 0; i < 5; i++) {
+                sendto(sock, reinterpret_cast<const char*>(&fin_ack), sizeof(RDTPacket), 0, (struct sockaddr*)&client_addr, client_len);
+            }
             break; 
         }
 

@@ -26,6 +26,7 @@ struct Session {
     int dataPeerPort = -1;
 
     std::unique_ptr<IRDTChannel> dataChannel;
+    sockaddr_in clientControlAddr{};
 };
 
 class ClientRegistry {

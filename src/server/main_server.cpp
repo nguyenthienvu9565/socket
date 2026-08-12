@@ -29,7 +29,8 @@ void handleClientSession(SOCKET clientSocket, std::string clientId, sockaddr_in 
     ftp::Session session;
     session.socketFd = clientSocket;
     session.clientId = clientId;
-    session.rootDir = "./ftp_root"; 
+    session.clientControlAddr = clientAddr;
+    session.rootDir = "./server_data"; 
     session.cwd = "";
     session.authenticated = false;
 
@@ -139,10 +140,10 @@ int main() {
             sockaddr_in localAddr{};
             localAddr.sin_family = AF_INET;
             localAddr.sin_addr.s_addr = INADDR_ANY;
-            localAddr.sin_port = htons(CONTROL_PORT);
+            localAddr.sin_port = htons(0); // Để Port 0 cho hệ thống tự cấp port riêng cho Worker
             bind(workerSocket, reinterpret_cast<sockaddr*>(&localAddr), sizeof(localAddr));
 
-            connect(workerSocket, reinterpret_cast<sockaddr*>(&clientAddr), sizeof(clientAddr));
+            // ĐÃ XÓA DÒNG connect(workerSocket, ...) GÂY LỖI WSAEISCONN TẠI ĐÂY!
 
             std::thread(handleClientSession, workerSocket, clientId, clientAddr).detach();
         }

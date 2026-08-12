@@ -1,6 +1,7 @@
 #include "../../../include/server/handlers/fs_handler.h"
 #include "../../../include/server/reply_codes.h"
 #include "../../../include/server/rdt_interface.h"
+#include "../../../include/core/rdt.h"
 #include <filesystem>
 #include <optional>
 #include <algorithm>
@@ -49,6 +50,13 @@ std::string formatPermissions(fs::perms p) {
 }
 
 } // namespace
+
+sockaddr_in getPeerAddress(SOCKET sock) {
+    sockaddr_in peerAddr{};
+    int peerLen = sizeof(peerAddr);
+    getpeername(sock, reinterpret_cast<sockaddr*>(&peerAddr), &peerLen);
+    return peerAddr;
+}
 
 std::string handlePWD(Session& session) {
     return formatReply(PATHNAME_CREATED, "\"/" + session.cwd.generic_string() + "\" is the current directory");
@@ -116,6 +124,11 @@ std::string handleLIST(const std::string& args, Session& session, IRDTChannel& r
     }
 
     std::string payload = out.str();
+
+    if (payload.empty()) {
+        payload = "(Directory is empty)\r\n";
+    }
+
     std::vector<char> buffer(payload.begin(), payload.end());
     
     if (!rdt.sendBuffer(buffer)) {
@@ -124,16 +137,33 @@ std::string handleLIST(const std::string& args, Session& session, IRDTChannel& r
     return formatReply(TRANSFER_COMPLETE, "Directory send OK.");
 }
 
-std::string handleNLST(const std::string& args, Session& session) {
+std::string handleNLST(const std::string& args, Session& session, IRDTChannel& rdt) {
     auto resolved = resolveSafePath(args, session);
     if (!resolved || !fs::is_directory(*resolved)) {
         return formatReply(FILE_UNAVAILABLE, "Directory not found");
     }
+    
     std::ostringstream out;
     for (const auto& entry : fs::directory_iterator(*resolved)) {
         out << entry.path().filename().string() << "\r\n";
     }
-    return formatReply(FILE_STATUS_OK, "Here comes the name list:\r\n" + out.str());
+    
+    std::string payload = out.str();
+    
+    // Chống kẹt luồng RDT nếu thư mục rỗng (gói tin 0 byte)
+    if (payload.empty()) {
+        payload = "(Directory is empty)\r\n";
+    }
+    
+    std::vector<char> buffer(payload.begin(), payload.end());
+    
+    // Gửi danh sách qua kênh dữ liệu Data Channel (UDP)
+    if (!rdt.sendBuffer(buffer)) {
+        return formatReply(CONN_CLOSED_TRANSFER_ABORTED, "Data connection failed");
+    }
+    
+    // Trả về mã 226 báo hiệu truyền xong, thay vì nhồi dữ liệu vào mã 150 như cũ
+    return formatReply(TRANSFER_COMPLETE, "Name list send OK.");
 }
 
 std::string handleSIZE(const std::string& args, Session& session) {
